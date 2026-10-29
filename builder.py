@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QRadioButton, QButtonGroup, QComboBox,
     QPlainTextEdit, QSpinBox, QGroupBox, QTabWidget, QMessageBox, QFrame,
+    QListWidget, QFileDialog,
 )
 
 # When frozen into an .exe (PyInstaller), __file__ points into a temp extract folder, so use the
@@ -109,6 +110,41 @@ class PullThread(QThread):
             self.done.emit(1)
 
 
+class CmdThread(QThread):
+    """Runs a sequence of (label, argv) steps, streaming output; stops at the first failure."""
+    line = Signal(str)
+    done = Signal(int)
+
+    def __init__(self, steps):
+        super().__init__()
+        self.steps = steps
+
+    def run(self):
+        for label, argv in self.steps:
+            self.line.emit(f"== {label} ==")
+            try:
+                p = subprocess.Popen(
+                    argv, cwd=str(AGENT_DIR),
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                    creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+                )
+                for ln in p.stdout:
+                    self.line.emit(ln.rstrip())
+                p.wait()
+                if p.returncode != 0:
+                    self.done.emit(p.returncode)
+                    return
+            except FileNotFoundError as e:
+                self.line.emit(f"Not found: {e}. Is it installed and on PATH?")
+                self.done.emit(1)
+                return
+            except Exception as e:  # noqa: BLE001
+                self.line.emit(f"Error: {e}")
+                self.done.emit(1)
+                return
+        self.done.emit(0)
+
+
 class Builder(QWidget):
     def __init__(self):
         super().__init__()
@@ -118,6 +154,7 @@ class Builder(QWidget):
         if _ico.exists():
             self.setWindowIcon(QIcon(str(_ico)))
         self.pull_thread = None
+        self.addon_thread = None
         self.cfg = self.load_config()
 
         root = QVBoxLayout(self)
@@ -129,8 +166,10 @@ class Builder(QWidget):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._model_tab(), "Brain")
         self.tabs.addTab(self._features_tab(), "Features")
+        self.tabs.addTab(self._folders_tab(), "Folders")
         self.tabs.addTab(self._personality_tab(), "Personality")
         self.tabs.addTab(self._phone_tab(), "Phone")
+        self.tabs.addTab(self._addons_tab(), "Add-ons")
         root.addWidget(self.tabs, 1)
 
         # Bottom action bar
@@ -187,6 +226,7 @@ class Builder(QWidget):
                 "port": self.port_spin.value(),
                 "token": self.token_edit.text().strip(),
             },
+            "folders": [self.folders_list.item(i).text() for i in range(self.folders_list.count())],
             "personality": self.persona_edit.toPlainText().strip(),
         }
 
@@ -395,6 +435,143 @@ class Builder(QWidget):
         lay.addStretch(1)
         return w
 
+    # ---------------------------------------------------------------- Folders tab
+
+    def _folders_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.addWidget(QLabel("Folders the agent is allowed to change (create, edit, move or delete files in)."))
+        self.folders_list = QListWidget()
+        lay.addWidget(self.folders_list, 1)
+        row = QHBoxLayout()
+        add_btn = QPushButton("Add folder...")
+        add_btn.clicked.connect(self.add_folder)
+        rm_btn = QPushButton("Remove selected")
+        rm_btn.clicked.connect(self.remove_folder)
+        row.addWidget(add_btn)
+        row.addWidget(rm_btn)
+        row.addStretch(1)
+        lay.addLayout(row)
+        note = QLabel("Leave empty to let the agent work anywhere (in normal mode it still asks before each "
+                      "change). Add folders to fence it in: it can still read files elsewhere, but it can only "
+                      "create, edit, move or delete inside these folders - even over the phone.")
+        note.setStyleSheet("color:#888;")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        return w
+
+    def add_folder(self):
+        d = QFileDialog.getExistingDirectory(self, "Choose a folder the agent may use")
+        if d:
+            self.folders_list.addItem(d)
+
+    def remove_folder(self):
+        for item in self.folders_list.selectedItems():
+            self.folders_list.takeItem(self.folders_list.row(item))
+
+    # ---------------------------------------------------------------- Add-ons tab
+
+    def _addons_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.addWidget(QLabel("Optional packs. Install only what you want; each is separate from the core agent."))
+
+        gen_box = QGroupBox("Image & sound generation")
+        gg = QVBoxLayout(gen_box)
+        gg.addWidget(QLabel("Local Stable Diffusion (images), MusicGen (music/SFX) and Piper (speech). "
+                            "Needs Python 3.13, and downloads several GB the first time."))
+        grow = QHBoxLayout()
+        self.gen_btn = QPushButton("Install image & sound pack")
+        self.gen_btn.clicked.connect(self.install_gen)
+        self.gen_status = QLabel("")
+        grow.addWidget(self.gen_btn)
+        grow.addWidget(self.gen_status, 1)
+        gg.addLayout(grow)
+        lay.addWidget(gen_box)
+
+        rea_box = QGroupBox("REA reverse-engineering tools")
+        rg = QVBoxLayout(rea_box)
+        rg.addWidget(QLabel("Adds the REA toolset (binaries, apps, firmware, web) as an MCP server. "
+                            "Runs through npx, so it needs Node.js installed."))
+        rrow = QHBoxLayout()
+        self.rea_btn = QPushButton("Enable REA tools")
+        self.rea_btn.clicked.connect(self.toggle_rea)
+        self.rea_status = QLabel("")
+        rrow.addWidget(self.rea_btn)
+        rrow.addWidget(self.rea_status, 1)
+        rg.addLayout(rrow)
+        lay.addWidget(rea_box)
+
+        self.addon_log = QLabel("")
+        self.addon_log.setStyleSheet("color:#888;")
+        self.addon_log.setWordWrap(True)
+        lay.addWidget(self.addon_log)
+        lay.addStretch(1)
+        self._refresh_addon_status()
+        return w
+
+    def _gen_installed(self) -> bool:
+        return (AGENT_DIR / "gen" / ".venv" / "Scripts" / "python.exe").exists()
+
+    def _rea_enabled(self) -> bool:
+        try:
+            data = json.loads((AGENT_DIR / "mcp_servers.json").read_text(encoding="utf-8"))
+            return "rea" in data.get("mcpServers", {})
+        except Exception:
+            return False
+
+    def _refresh_addon_status(self):
+        installed = self._gen_installed()
+        self.gen_status.setText("Installed." if installed else "Not installed.")
+        self.gen_btn.setText("Reinstall image & sound pack" if installed else "Install image & sound pack")
+        on = self._rea_enabled()
+        self.rea_status.setText("Enabled." if on else "Not enabled.")
+        self.rea_btn.setText("Disable REA tools" if on else "Enable REA tools")
+
+    def install_gen(self):
+        if self.addon_thread:
+            return
+        genvenv = AGENT_DIR / "gen" / ".venv"
+        gpy = str(genvenv / "Scripts" / "python.exe")
+        steps = [
+            ("Create Python 3.13 environment", ["py", "-3.13", "-m", "venv", str(genvenv)]),
+            ("Install PyTorch (CUDA 12.8) - large download",
+             [gpy, "-m", "pip", "install", "--index-url", "https://download.pytorch.org/whl/cu128",
+              "torch", "torchaudio"]),
+            ("Install image/audio libraries",
+             [gpy, "-m", "pip", "install", "-r", str(AGENT_DIR / "gen" / "requirements.txt")]),
+        ]
+        self.gen_btn.setEnabled(False)
+        self.addon_log.setText("Installing image & sound pack - this downloads several GB, give it time...")
+        self.addon_thread = CmdThread(steps)
+        self.addon_thread.line.connect(lambda ln: self.addon_log.setText(ln))
+        self.addon_thread.done.connect(self._gen_done)
+        self.addon_thread.start()
+
+    def _gen_done(self, code: int):
+        self.gen_btn.setEnabled(True)
+        self.addon_thread = None
+        self.addon_log.setText("Image & sound pack installed." if code == 0
+                               else "Install failed - see the line above (is Python 3.13 installed?).")
+        self._refresh_addon_status()
+
+    def toggle_rea(self):
+        f = AGENT_DIR / "mcp_servers.json"
+        try:
+            data = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+        except Exception:
+            data = {}
+        servers = data.setdefault("mcpServers", {})
+        if "rea" in servers:
+            del servers["rea"]
+            msg = "REA tools disabled."
+        else:
+            servers["rea"] = {"command": "cmd.exe", "args": ["/d", "/c", "npx", "-y", "rea-agents@6.8.0", "mcp"]}
+            msg = "REA tools enabled - restart the agent to load them."
+        f.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        self.addon_log.setText(msg)
+        self._refresh_addon_status()
+
     # ---------------------------------------------------------------- load saved values into widgets
 
     def load_into_widgets(self):
@@ -412,6 +589,8 @@ class Builder(QWidget):
             cb.setChecked(bool(c.get("features", {}).get(key, True)))
         self.name_edit.setText(c.get("name", "pc-agent"))
         self.persona_edit.setPlainText(c.get("personality", ""))
+        self.folders_list.clear()
+        self.folders_list.addItems([str(f) for f in c.get("folders", [])])
         s = c.get("serve", {})
         self.serve_check.setChecked(bool(s.get("enabled", False)))
         self.port_spin.setValue(int(s.get("port", 8765)))

@@ -67,6 +67,8 @@ def find_godot() -> str | None:
 
 GODOT_EXE = find_godot()
 WORKSPACE: Path | None = None  # set by --overnight; file tools stay inside it
+ALLOWED_DIRS: list = []  # set from a Builder config's "folders": when non-empty, the agent may only
+                         # create, edit, move or delete inside these folders (reading stays unrestricted)
 
 DONE_MARKER = "TASK COMPLETE"
 OVERNIGHT_NUDGE = (
@@ -183,6 +185,20 @@ def _resolve(path: str) -> Path:
     if WORKSPACE and not p.is_relative_to(WORKSPACE):
         raise PermissionError(f"{p} is outside the workspace {WORKSPACE}")
     return p
+
+
+def _is_within(p: Path, d: Path) -> bool:
+    try:
+        return p.resolve().is_relative_to(d)
+    except (OSError, ValueError):
+        return False
+
+
+def _check_writable(p: Path):
+    """When the Builder has set allowed folders, refuse to change anything outside them."""
+    if ALLOWED_DIRS and not any(_is_within(p, d) for d in ALLOWED_DIRS):
+        allowed = ", ".join(str(d) for d in ALLOWED_DIRS)
+        raise PermissionError(f"{p} is outside the folders the agent may change ({allowed})")
 
 
 def _truncate(text: str) -> str:
@@ -355,6 +371,7 @@ def read_file(path: str, offset: int = 1, limit: int = 2000) -> str:
 
 def write_file(path: str, content: str) -> str:
     p = _resolve(path)
+    _check_writable(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
     return f"Wrote {len(content)} chars to {p}"
@@ -362,6 +379,7 @@ def write_file(path: str, content: str) -> str:
 
 def edit_file(path: str, old_string: str, new_string: str) -> str:
     p = _resolve(path)
+    _check_writable(p)
     text = p.read_text(encoding="utf-8")
     count = text.count(old_string)
     if count == 0:
@@ -804,6 +822,7 @@ def default_config() -> dict:
                   "text_model": AUTO_TEXT_MODEL, "vision_model": AUTO_VISION_MODEL, "ctx": 65536},
         "features": {**{k: True for k in FEATURE_TOOLS}, "computer": True},
         "serve": {"enabled": False, "host": "0.0.0.0", "port": 8765, "token": ""},
+        "folders": [],
         "personality": "",
     }
 
@@ -819,6 +838,8 @@ def enabled_tools_from(features: dict) -> set:
 
 def apply_config(args, cfg: dict) -> set:
     """Fill an argparse Namespace from a Builder config, and return the enabled tool names."""
+    global ALLOWED_DIRS
+    ALLOWED_DIRS = [Path(f).expanduser().resolve() for f in cfg.get("folders", []) if str(f).strip()]
     model = cfg.get("model", {})
     mode = model.get("mode", "auto")
     if mode == "auto":
@@ -863,13 +884,14 @@ def check_unattended_command(command: str) -> str | None:
     """A speed bump for overnight mode, not a sandbox: returns why a command is refused."""
     if BLOCKED_COMMANDS.search(command):
         return "system-level commands are not allowed when running unattended"
-    if DELETE_VERBS.search(command) and WORKSPACE is not None:
+    bounds = ALLOWED_DIRS or ([WORKSPACE] if WORKSPACE is not None else [])
+    if DELETE_VERBS.search(command) and bounds:
         for path in ABS_PATH.findall(command):
             expanded = re.sub(r"\$env:(\w+)", lambda m: os.environ.get(m.group(1), "C:\\"), path, flags=re.I)
             expanded = re.sub(r"^\$HOME", lambda m: str(Path.home()), expanded, flags=re.I)
             try:
-                if not Path(os.path.expanduser(expanded)).resolve().is_relative_to(WORKSPACE):
-                    return f"deleting or moving {path} (outside the workspace) is not allowed"
+                if not any(_is_within(Path(os.path.expanduser(expanded)), b) for b in bounds):
+                    return f"deleting or moving {path} (outside the allowed folders) is not allowed"
             except (OSError, ValueError):
                 return f"could not check path {path}"
         if re.search(r"\.\.[\\/]", command):
@@ -1086,6 +1108,10 @@ class Agent:
         self.num_ctx = num_ctx
         self.max_steps = max_steps
         self.system_prompt = build_system_prompt(overnight)
+        if ALLOWED_DIRS:
+            dirs = "\n".join(f"  - {d}" for d in ALLOWED_DIRS)
+            self.system_prompt += ("\n\nYou may only create, edit, move or delete files inside these folders:\n"
+                                   + dirs + "\nReading files elsewhere is fine; put anything you create in one of these.")
         if mcp and mcp.sessions:
             self.system_prompt += f"""
 

@@ -29,6 +29,10 @@ It reads and writes `agent_config.json` next to `agent.py`, and the agent runs t
 in the GUI, or hand-edit the JSON, whichever you like. Every feature is optional: you can make anything from a bare
 chat up to a fully loaded agent.
 
+The Builder also lets you **limit the agent to chosen folders** (the Folders tab - it can read anywhere but may
+only create, edit, move or delete inside those folders, even over the phone), and **install optional add-ons**
+(the Add-ons tab - the image/sound generation pack, and the REA reverse-engineering tools).
+
 ## Tools
 
 | Tool | Asks permission | What it does |
