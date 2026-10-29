@@ -1,0 +1,20 @@
+# Dependencies for local image and audio generation (gen_image.py, gen_music.py, Piper TTS).
+# Install once into a dedicated environment (use Python 3.13 - torch has no 3.14 wheels yet):
+#
+#     py -3.13 -m venv gen\.venv
+#     gen\.venv\Scripts\pip install --index-url https://download.pytorch.org/whl/cu128 torch torchaudio
+#     gen\.venv\Scripts\pip install -r gen\requirements.txt
+#
+# IMPORTANT: install torch FIRST with the --index-url line above. That forces the CUDA 12.8 build,
+# which the RTX 50-series (Blackwell, e.g. 5060 Ti) needs. If you let torch come from plain PyPI
+# (or via --extra-index-url) you get the CPU-only build and generation runs on the CPU - very slow.
+# On an older GPU, pick the matching CUDA version from https://pytorch.org/get-started/locally/.
+# torch and torchaudio are intentionally NOT listed below so this file never pulls the CPU wheel.
+
+diffusers>=0.31
+transformers>=4.46
+accelerate
+safetensors
+soundfile
+rembg          # background removal for transparent sprites
+piper-tts      # local text-to-speech (generate_speech)

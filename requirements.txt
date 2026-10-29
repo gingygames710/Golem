@@ -1,0 +1,5 @@
+anthropic
+ddgs       # free web search
+mcp        # connect MCP servers such as REA (mcp_servers.json)
+pyautogui  # only needed for --computer
+pillow     # screenshots for --computer

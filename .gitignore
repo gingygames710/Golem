@@ -1,0 +1,27 @@
+# Virtual environments (big, machine-specific - recreate from requirements.txt)
+.venv/
+gen/.venv/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Runtime output
+logs/
+jobs/
+
+# Per-user secrets and settings - keep these OFF any public remote.
+# agent_config.json holds your phone login token; ntfy_topic.txt is your secret push topic.
+agent_config.json
+ntfy_topic.txt
+
+# Generated test media
+gen/test_ship.png
+
+# Build artifacts (PyInstaller etc.)
+build/
+dist/
+*.spec
+
+# Saved daily schedule - per-user state, like agent_config.json
+schedule.json
