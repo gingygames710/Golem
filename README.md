@@ -31,7 +31,11 @@ chat up to a fully loaded agent.
 
 The Builder also lets you **limit the agent to chosen folders** (the Folders tab - it can read anywhere but may
 only create, edit, move or delete inside those folders, even over the phone), and **install optional add-ons**
-(the Add-ons tab - the image/sound generation pack, and the REA reverse-engineering tools).
+(the Add-ons tab - the image/sound generation pack, and the REA reverse-engineering tools). From the Brain tab
+you can browse the full **Ollama library** and **Hugging Face** and pull any model, including any GGUF from Hugging
+Face via `ollama pull hf.co/USER/REPO`.
+
+**Planned:** detect the GPU in the machine and automatically recommend (or pick) the best-fitting model for its VRAM.
 
 ## Tools
 

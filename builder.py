@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import secrets
+import webbrowser
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
@@ -293,6 +294,17 @@ class Builder(QWidget):
         self.pull_log = QLabel("")
         self.pull_log.setStyleSheet("color: #888;")
         pg.addWidget(self.pull_log, 1, 0, 1, 4)
+        browse_ollama = QPushButton("Browse Ollama library")
+        browse_ollama.clicked.connect(lambda: webbrowser.open("https://ollama.com/library"))
+        browse_hf = QPushButton("Browse Hugging Face (GGUF)")
+        browse_hf.clicked.connect(lambda: webbrowser.open("https://huggingface.co/models?library=gguf&sort=trending"))
+        pg.addWidget(browse_ollama, 2, 0, 1, 2)
+        pg.addWidget(browse_hf, 2, 2, 1, 2)
+        hint = QLabel("Thousands of models: pull any name from Ollama's library, or any GGUF from Hugging Face "
+                      "by pulling  hf.co/USER/REPO  (add :Q4_K_M for a smaller quant). Paste a tag above and Pull.")
+        hint.setStyleSheet("color:#888;")
+        hint.setWordWrap(True)
+        pg.addWidget(hint, 3, 0, 1, 4)
         lay.addWidget(pull_box)
 
         if not installed:
