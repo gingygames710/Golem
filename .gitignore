@@ -22,6 +22,7 @@ gen/test_ship.png
 build/
 dist/
 *.spec
+*.exe
 
 # Saved daily schedule - per-user state, like agent_config.json
 schedule.json

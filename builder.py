@@ -26,7 +26,12 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QSpinBox, QGroupBox, QTabWidget, QMessageBox, QFrame,
 )
 
-AGENT_DIR = Path(__file__).resolve().parent
+# When frozen into an .exe (PyInstaller), __file__ points into a temp extract folder, so use the
+# exe's own location instead. Keep the exe in the pc-agent folder, next to agent.py and .venv.
+if getattr(sys, "frozen", False):
+    AGENT_DIR = Path(sys.executable).resolve().parent
+else:
+    AGENT_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = AGENT_DIR / "agent_config.json"
 AGENT_PY = AGENT_DIR / "agent.py"
 
