@@ -83,6 +83,54 @@ def ollama_models() -> list:
         return []
 
 
+def detect_gpu():
+    """(name, vram_gb) for the main GPU, or (None, 0) if it can't tell."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=8,
+            creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0))
+        rows = [r for r in out.stdout.strip().splitlines() if r.strip()]
+        if rows:
+            name, mem = rows[0].split(",")
+            return name.strip(), round(int(mem.strip()) / 1024)  # MiB -> GiB
+    except Exception:
+        pass
+    try:  # non-NVIDIA: at least get the name (WMI VRAM is unreliable, so leave it unknown)
+        ps = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-CimInstance Win32_VideoController | Select-Object -First 1).Name"],
+            capture_output=True, text=True, timeout=8,
+            creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0))
+        rows = [r for r in ps.stdout.strip().splitlines() if r.strip()]
+        if rows:
+            return rows[0].strip(), 0
+    except Exception:
+        pass
+    return None, 0
+
+
+def recommend_for(vram: int) -> dict:
+    """Pick a sensible, tool-capable model for the card's VRAM (GB)."""
+    if vram >= 24:
+        return dict(mode="auto", text="qwen2.5:14b", vision="gemma4:12b", local="",
+                    note="lots of VRAM - a strong text model plus a vision model, switched per task")
+    if vram >= 12:
+        return dict(mode="auto", text="hermes3", vision="gemma4:12b", local="",
+                    note="comfortable - a fast uncensored text model and a vision model both stay loaded")
+    if vram >= 8:
+        return dict(mode="local", text="", vision="", local="llama3.1:8b",
+                    note="one solid 8B model with tools; screen/vision will be tight")
+    if vram >= 6:
+        return dict(mode="local", text="", vision="", local="llama3.2:3b",
+                    note="a small, quick 3B model")
+    if vram > 0:
+        return dict(mode="local", text="", vision="", local="llama3.2:3b",
+                    note="low VRAM - a small 3B model that may lean on the CPU")
+    return dict(mode="local", text="", vision="", local="llama3.2:3b",
+                note="no NVIDIA GPU detected - a small 3B model that can run on the CPU (slower)")
+
+
 class PullThread(QThread):
     """Runs `ollama pull <model>` and streams its progress lines back to the GUI."""
     line = Signal(str)
@@ -156,6 +204,7 @@ class Builder(QWidget):
             self.setWindowIcon(QIcon(str(_ico)))
         self.pull_thread = None
         self.addon_thread = None
+        self._rec = None  # the latest GPU model recommendation
         self.cfg = self.load_config()
 
         root = QVBoxLayout(self)
@@ -186,6 +235,7 @@ class Builder(QWidget):
         root.addLayout(bar)
 
         self.load_into_widgets()
+        self.detect_gpu_clicked()  # show the GPU + a recommendation on startup
 
     # ---------------------------------------------------------------- config I/O
 
@@ -244,6 +294,23 @@ class Builder(QWidget):
     def _model_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
+
+        gpu_box = QGroupBox("Your GPU")
+        gl = QVBoxLayout(gpu_box)
+        self.gpu_label = QLabel("Detecting your graphics card...")
+        self.gpu_label.setWordWrap(True)
+        grow = QHBoxLayout()
+        detect_btn = QPushButton("Detect my GPU")
+        detect_btn.clicked.connect(self.detect_gpu_clicked)
+        self.apply_rec_btn = QPushButton("Use recommended")
+        self.apply_rec_btn.clicked.connect(self.apply_recommendation)
+        self.apply_rec_btn.setEnabled(False)
+        grow.addWidget(detect_btn)
+        grow.addWidget(self.apply_rec_btn)
+        grow.addStretch(1)
+        gl.addWidget(self.gpu_label)
+        gl.addLayout(grow)
+        lay.addWidget(gpu_box)
 
         box = QGroupBox("How should the agent think?")
         g = QVBoxLayout(box)
@@ -357,6 +424,31 @@ class Builder(QWidget):
         self.pull_log.setText("Done." if code == 0 else "Pull failed - see the message above.")
         if code == 0:
             self.refresh_models()
+
+    def detect_gpu_clicked(self):
+        name, vram = detect_gpu()
+        self._rec = recommend_for(vram)
+        where = name or "No GPU detected"
+        vtxt = f" - {vram} GB" if vram else ""
+        pick = (f"Auto ({self._rec['text']} + {self._rec['vision']})" if self._rec["mode"] == "auto"
+                else self._rec["local"])
+        self.gpu_label.setText(f"{where}{vtxt}\nRecommended: {pick}\n{self._rec['note']}")
+        self.apply_rec_btn.setEnabled(True)
+
+    def apply_recommendation(self):
+        if not self._rec:
+            return
+        r = self._rec
+        self.r_auto.setChecked(r["mode"] == "auto")
+        self.r_local.setChecked(r["mode"] == "local")
+        if r["text"]:
+            self.text_combo.setCurrentText(r["text"])
+        if r["vision"]:
+            self.vision_combo.setCurrentText(r["vision"])
+        if r["local"]:
+            self.local_combo.setCurrentText(r["local"])
+        self._refresh_model_fields()
+        self.flash("Applied the recommended model for your GPU.")
 
     # ---------------------------------------------------------------- Features tab
 

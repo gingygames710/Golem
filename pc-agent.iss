@@ -3,7 +3,7 @@
 ; Compile with:  ISCC.exe pc-agent.iss   ->  installer\pc-agent-setup.exe
 
 #define MyAppName "pc-agent"
-#define MyAppVersion "0.1.2"
+#define MyAppVersion "0.1.3"
 #define MyAppPublisher "pc-agent"
 #define BuilderExe "pc-agent-builder.exe"
 #define AgentExe "pc-agent.exe"
