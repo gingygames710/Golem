@@ -29,3 +29,6 @@ schedule.json
 
 # Compiled installer output
 installer/
+
+# Undo snapshots the agent makes before changing a file
+.golem_backups/

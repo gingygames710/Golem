@@ -14,6 +14,7 @@ import os
 import platform
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -33,6 +34,7 @@ AGENT_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", Fals
     else Path(__file__).resolve().parent  # exe folder when frozen, else this file's folder
 PERSONALITY_FILE = AGENT_DIR / "personality.txt"  # edit this to change how the agent talks
 GEN_DIR = AGENT_DIR / "gen"  # local image/audio generation scripts and their own venv live here
+BACKUP_DIR = AGENT_DIR / ".golem_backups"  # copies of files before the agent changed them, so edits can be undone
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh")  # free phone push notifications
 NTFY_TOPIC_FILE = AGENT_DIR / "ntfy_topic.txt"  # the secret topic your phone subscribes to
 
@@ -226,6 +228,18 @@ def _check_writable(p: Path):
         raise PermissionError(f"{p} is outside the folders the agent may change ({allowed})")
 
 
+def _snapshot(p: Path):
+    """Save a copy of an existing file before it is overwritten or edited, so the change can be undone.
+    Best effort - a backup problem never blocks the actual operation. Undo copies live in BACKUP_DIR."""
+    try:
+        if p.exists() and p.is_file():
+            BACKUP_DIR.mkdir(exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            shutil.copy2(p, BACKUP_DIR / f"{p.name}.{stamp}.bak")
+    except Exception:  # noqa: BLE001 - never let a backup failure stop the user's work
+        pass
+
+
 def _truncate(text: str) -> str:
     if len(text) <= MAX_OUTPUT_CHARS:
         return text
@@ -397,6 +411,7 @@ def read_file(path: str, offset: int = 1, limit: int = 2000) -> str:
 def write_file(path: str, content: str) -> str:
     p = _resolve(path)
     _check_writable(p)
+    _snapshot(p)  # keep an undo copy if we're about to overwrite an existing file
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
     return f"Wrote {len(content)} chars to {p}"
@@ -405,6 +420,7 @@ def write_file(path: str, content: str) -> str:
 def edit_file(path: str, old_string: str, new_string: str) -> str:
     p = _resolve(path)
     _check_writable(p)
+    _snapshot(p)  # keep an undo copy before editing
     text = p.read_text(encoding="utf-8")
     count = text.count(old_string)
     if count == 0:
