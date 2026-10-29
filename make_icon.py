@@ -1,4 +1,4 @@
-"""Generate icon.ico (and icon.png preview) for the pc-agent apps.
+"""Generate icon.ico (and icon.png preview) for the Golem apps.
 
 A friendly robot face on an indigo->cyan rounded tile. Run once; the build picks up icon.ico:
     .venv\\Scripts\\python make_icon.py

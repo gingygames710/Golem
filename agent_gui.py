@@ -1,4 +1,4 @@
-"""pc-agent desktop - your agent in its own window.
+"""Golem desktop - your agent in its own window.
 
 A friendly chat window for the agent, so you never touch a terminal. It runs your configured
 agent (from agent_config.json) and shows the conversation as chat bubbles; type in the box to
@@ -6,7 +6,7 @@ talk to it, and when it wants to do something on your PC, answer with the Allow 
 
 Runs either way with no change:
   - development: launches  python agent.py --config agent_config.json --chat
-  - installed:  launches  pc-agent-core.exe --config agent_config.json --chat   (no Python needed)
+  - installed:  launches  golem-core.exe --config agent_config.json --chat   (no Python needed)
 """
 
 import codecs
@@ -31,7 +31,7 @@ else:
     AGENT_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = AGENT_DIR / "agent_config.json"
 AGENT_PY = AGENT_DIR / "agent.py"
-CORE_EXE = AGENT_DIR / "pc-agent-core.exe"  # the frozen agent, present in an installed copy
+CORE_EXE = AGENT_DIR / "golem-core.exe"  # the frozen agent, present in an installed copy
 ICON = AGENT_DIR / "icon.ico"
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")            # colour codes to strip from the console output
@@ -63,9 +63,9 @@ def agent_command() -> list:
 
 def agent_name() -> str:
     try:
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8")).get("name") or "pc-agent"
+        return json.loads(CONFIG_FILE.read_text(encoding="utf-8")).get("name") or "Golem"
     except Exception:
-        return "pc-agent"
+        return "Golem"
 
 
 class Reader(QThread):
@@ -97,7 +97,7 @@ class AgentWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.name = agent_name()
-        self.setWindowTitle(f"{self.name} - pc-agent")
+        self.setWindowTitle(f"{self.name} - Golem")
         self.resize(820, 720)
         if ICON.exists():
             self.setWindowIcon(QIcon(str(ICON)))

@@ -497,7 +497,7 @@ class _TextExtractor(HTMLParser):
 
 
 def fetch_url(url: str) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (pc-agent)"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Golem)"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         raw = resp.read(3_000_000).decode(resp.headers.get_content_charset() or "utf-8", errors="replace")
         if "html" not in resp.headers.get_content_type():
@@ -621,7 +621,7 @@ def _ntfy_topic() -> str | None:
     return None
 
 
-def send_notification(message: str, title: str = "pc-agent", priority: str = "default") -> str:
+def send_notification(message: str, title: str = "Golem", priority: str = "default") -> str:
     """Push a short notification to the user's phone through ntfy (free). One-time topic setup needed."""
     topic = _ntfy_topic()
     if not topic:
@@ -817,7 +817,7 @@ FEATURE_TOOLS = {
 def default_config() -> dict:
     """A full-featured config: the shape the Builder GUI reads and writes."""
     return {
-        "name": "pc-agent",
+        "name": "Golem",
         "model": {"mode": "auto", "local_model": "gemma4:12b",
                   "text_model": AUTO_TEXT_MODEL, "vision_model": AUTO_VISION_MODEL, "ctx": 65536},
         "features": {**{k: True for k in FEATURE_TOOLS}, "computer": True},
@@ -1010,7 +1010,7 @@ def add_job(name: str, at: str, task: str, folder: str = "", hours: float = 8.0,
     if not IS_WINDOWS:
         return (f"Saved job '{name}'. Automatic scheduling here is Windows-only; add a cron entry that runs:\n"
                 f"  {_agent_python()} {AGENT_DIR / 'agent.py'} --run-job {name}")
-    p = subprocess.run(["schtasks", "/create", "/tn", f"pc-agent {name}", "/tr", f'"{launcher}"',
+    p = subprocess.run(["schtasks", "/create", "/tn", f"Golem {name}", "/tr", f'"{launcher}"',
                         "/sc", "daily", "/st", at, "/f"], capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     if p.returncode != 0:
@@ -1026,7 +1026,7 @@ def remove_job(name: str) -> str:
     _save_jobs(jobs)
     (JOBS_DIR / f"{name}.cmd").unlink(missing_ok=True)
     if IS_WINDOWS:
-        subprocess.run(["schtasks", "/delete", "/tn", f"pc-agent {name}", "/f"], capture_output=True, text=True)
+        subprocess.run(["schtasks", "/delete", "/tn", f"Golem {name}", "/f"], capture_output=True, text=True)
     return f"Removed scheduled job '{name}'." if existed else f"No job called '{name}'."
 
 
@@ -1458,7 +1458,7 @@ CHAT_HTML = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>pc-agent</title>
+<title>Golem</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -1481,7 +1481,7 @@ CHAT_HTML = """<!doctype html>
 </style>
 </head>
 <body>
-  <header>pc-agent</header>
+  <header>Golem</header>
   <div id="log"></div>
   <form id="f">
     <textarea id="t" rows="1" placeholder="Give your agent a task..." autocomplete="off"></textarea>
@@ -1713,7 +1713,7 @@ def main():
             keep_awake(False)
         if is_job:
             try:
-                send_notification(f"Scheduled job '{args.run_job}' finished (see LAST_RUN.md).", title="pc-agent")
+                send_notification(f"Scheduled job '{args.run_job}' finished (see LAST_RUN.md).", title="Golem")
             except Exception:  # noqa: BLE001 - a missing notification must never fail the job
                 pass
         return
@@ -1721,7 +1721,7 @@ def main():
         agent.turn(" ".join(args.prompt))
         if is_job:
             try:
-                send_notification(f"Scheduled job '{args.run_job}' finished.", title="pc-agent")
+                send_notification(f"Scheduled job '{args.run_job}' finished.", title="Golem")
             except Exception:  # noqa: BLE001
                 pass
         return

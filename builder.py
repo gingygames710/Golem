@@ -1,4 +1,4 @@
-"""pc-agent Builder - a desktop GUI that builds a custom agent for you.
+"""Golem Builder - a desktop GUI that builds a custom agent for you.
 
 Pick an LLM (and pull it through Ollama right here), switch each feature on or off,
 give the agent a personality, turn on phone access, then Save and Launch. Everything
@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 # When frozen into an .exe (PyInstaller), __file__ points into a temp extract folder, so use the
-# exe's own location instead. Keep the exe in the pc-agent folder, next to agent.py and .venv.
+# exe's own location instead. Keep the exe in the Golem folder, next to agent.py and .venv.
 if getattr(sys, "frozen", False):
     AGENT_DIR = Path(sys.executable).resolve().parent
 else:
@@ -197,7 +197,7 @@ class CmdThread(QThread):
 class Builder(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("pc-agent Builder")
+        self.setWindowTitle("Golem Builder")
         self.resize(720, 760)
         _ico = AGENT_DIR / "icon.ico"
         if _ico.exists():
@@ -208,7 +208,7 @@ class Builder(QWidget):
         self.cfg = self.load_config()
 
         root = QVBoxLayout(self)
-        title = QLabel("pc-agent Builder")
+        title = QLabel("Golem Builder")
         title.setFont(QFont("", 18, QFont.Bold))
         root.addWidget(title)
         root.addWidget(QLabel("Build a custom AI agent for this PC. Everything below is optional."))
@@ -245,7 +245,7 @@ class Builder(QWidget):
             import agent  # reuse the single source of truth for the default shape
             base = agent.default_config()
         except Exception:
-            base = {"name": "pc-agent",
+            base = {"name": "Golem",
                     "model": {"mode": "auto", "local_model": "gemma4:12b",
                               "text_model": "hermes3", "vision_model": "gemma4:12b", "ctx": 65536},
                     "features": {k: True for k, _, _ in FEATURES},
@@ -262,7 +262,7 @@ class Builder(QWidget):
     def collect(self) -> dict:
         mode = "auto" if self.r_auto.isChecked() else ("local" if self.r_local.isChecked() else "claude")
         return {
-            "name": self.name_edit.text().strip() or "pc-agent",
+            "name": self.name_edit.text().strip() or "Golem",
             "model": {
                 "mode": mode,
                 "local_model": self.local_combo.currentText().strip(),
@@ -691,7 +691,7 @@ class Builder(QWidget):
         self.ctx_spin.setValue(int(m.get("ctx", 65536)))
         for key, cb in self.feature_boxes.items():
             cb.setChecked(bool(c.get("features", {}).get(key, True)))
-        self.name_edit.setText(c.get("name", "pc-agent"))
+        self.name_edit.setText(c.get("name", "Golem"))
         self.persona_edit.setPlainText(c.get("personality", ""))
         self.folders_list.clear()
         self.folders_list.addItems([str(f) for f in c.get("folders", [])])
@@ -717,7 +717,7 @@ class Builder(QWidget):
         # The agent opens in its own desktop chat window (agent_gui.py), never a terminal.
         self.save()
         gui = AGENT_DIR / "agent_gui.py"
-        gui_exe = AGENT_DIR / "pc-agent.exe"  # the installed agent window, if present
+        gui_exe = AGENT_DIR / "Golem.exe"  # the installed agent window, if present
         try:
             if gui_exe.exists():
                 subprocess.Popen([str(gui_exe)], cwd=str(AGENT_DIR))

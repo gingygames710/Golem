@@ -1,7 +1,45 @@
-# Mini Claude Code agent
+# Golem
 
-A small agent in the style of Claude Code, written from scratch. Claude (`claude-opus-5-5`, via the API) is the brain;
-`agent.py` is the harness that lets it act on your computer.
+**Your own AI agent that lives on your PC.** You build it, give it a brain (any local model via
+[Ollama](https://ollama.com), or Claude via the API) and a personality, and it acts on your computer for you -
+running commands, reading and writing files, browsing, controlling the screen, generating images and sound, and
+more. It runs locally and free; nothing leaves your machine unless you choose a web search, a Claude API brain, or
+phone notifications.
+
+Golem is three apps behind one installer: the **Builder** (set it up with checkboxes), the **agent window** (chat
+with it), and the **core** (the agent itself). `agent.py` is the harness; the model only ever *asks* to use a tool,
+and your side decides what actually runs.
+
+## WARNING - Safety and dangers, read this first
+
+Golem can do real things to your computer. Treat it like handing someone remote hands on your machine, and
+understand these before you turn features on:
+
+- **It runs commands, and reads, writes and deletes files.** With screen control on, it also moves your mouse and
+  types. A wrong or confused step can damage or delete data. **Keep backups.**
+- **Permission prompts are your safety gate.** In normal chat it asks before anything that changes your machine -
+  *read what it wants to do and don't approve blindly.*
+- **Auto-approve removes that gate.** `--yes`, the phone web app (`--serve`), overnight runs and scheduled jobs run
+  tools *without asking*. Only use them for work and folders you're fine with it touching while you're not watching.
+- **The folder limit and overnight guards are speed bumps, not a real sandbox.** A determined or mistaken command
+  can still get outside them. Don't run unattended on a machine with irreplaceable data.
+- **Remote access exposes your PC.** With the phone app on, the login token is the *only* thing protecting it -
+  anyone with the token and a network path can drive your computer. Keep it on a private network like
+  [Tailscale](https://tailscale.com), never share the token, and change it if it leaks.
+- **Web content can try to trick it (prompt injection).** Pages and files it reads may contain text aimed at the AI
+  ("ignore your instructions and..."). Golem treats web content as data and asks before fetching, but review what
+  it does after it has browsed.
+- **Uncensored brains.** Auto mode uses a minimally-filtered local model (Hermes 3) that will answer things a
+  safety-tuned model won't. It runs on your hardware; you are responsible for what you ask and do with it.
+- **Your notification topic is semi-public.** Anyone who knows your ntfy topic name can read notifications you send
+  - keep it secret.
+- **The apps are unsigned.** Windows SmartScreen will warn on first run ("unknown publisher"). Only run builds you
+  trust - and that cuts both ways for anyone you share this with.
+- **No warranty.** This is early, personal software. Bugs happen. Use it on a machine you can afford to have make
+  mistakes, and keep backups.
+
+If you remember one thing: **don't run it with auto-approve, remote access, or overnight on anything you can't
+afford to lose - and keep backups.**
 
 ## How it works
 
@@ -35,7 +73,8 @@ only create, edit, move or delete inside those folders, even over the phone), an
 you can browse the full **Ollama library** and **Hugging Face** and pull any model, including any GGUF from Hugging
 Face via `ollama pull hf.co/USER/REPO`.
 
-**Planned:** detect the GPU in the machine and automatically recommend (or pick) the best-fitting model for its VRAM.
+The Brain tab also **detects your GPU and recommends the best-fitting model** for its VRAM in one click. (Planned:
+auto-pick it for you instead of just recommending.)
 
 ## Tools
 
