@@ -1,29 +1,53 @@
 # Golem
 
 **Your own AI agent that lives on your PC.** You build it, give it a brain (any local model via
-[Ollama](https://ollama.com), or Claude via the API) and a personality, and it acts on your computer for you -
-running commands, reading and writing files, browsing, controlling the screen, generating images and sound, and
-more. It runs locally and free; nothing leaves your machine unless you choose a web search, a Claude API brain, or
-phone notifications.
+[Ollama](https://ollama.com), or Claude via the API) and a personality, and it acts on your computer for you —
+running commands, reading and writing files, browsing the web, controlling the screen, generating images and
+sound, and more. It runs locally and free; nothing leaves your machine unless you choose a web search, a Claude
+API brain, or phone notifications.
 
 Golem is three apps behind one installer: the **Builder** (set it up with checkboxes), the **agent window** (chat
-with it), and the **core** (the agent itself). `agent.py` is the harness; the model only ever *asks* to use a tool,
-and your side decides what actually runs.
+with it), and the **core** (the agent itself). The model only ever *asks* to use a tool — your side decides what
+actually runs.
 
-## WARNING - Safety and dangers, read this first
+## Contents
+
+- [Safety and dangers (read this first)](#safety-and-dangers-read-this-first)
+- [What you need](#what-you-need)
+- [Quick start](#quick-start)
+- [The three apps](#the-three-apps)
+- [How it works](#how-it-works)
+- [The Builder](#the-builder)
+- [Tools the agent has](#tools-the-agent-has)
+- [Choosing a model](#choosing-a-model)
+- [Personality](#personality)
+- [Limiting it to folders](#limiting-it-to-folders)
+- [Using it from your phone](#using-it-from-your-phone)
+- [Phone notifications](#phone-notifications)
+- [Running on a schedule](#running-on-a-schedule)
+- [Long unattended runs](#long-unattended-runs)
+- [Add-on: images and sound](#add-on-images-and-sound)
+- [Add-on: reverse engineering (REA)](#add-on-reverse-engineering-rea)
+- [Godot game-making](#godot-game-making)
+- [The config file](#the-config-file)
+- [Running and building from source](#running-and-building-from-source)
+- [Project layout](#project-layout)
+- [Troubleshooting & FAQ](#troubleshooting--faq)
+
+## Safety and dangers (read this first)
 
 Golem can do real things to your computer. Treat it like handing someone remote hands on your machine, and
 understand these before you turn features on:
 
 - **It runs commands, and reads, writes and deletes files.** With screen control on, it also moves your mouse and
   types. A wrong or confused step can damage or delete data. **Keep backups.**
-- **Permission prompts are your safety gate.** In normal chat it asks before anything that changes your machine -
+- **Permission prompts are your safety gate.** In normal chat it asks before anything that changes your machine —
   *read what it wants to do and don't approve blindly.*
 - **Auto-approve removes that gate.** `--yes`, the phone web app (`--serve`), overnight runs and scheduled jobs run
-  tools *without asking*. Only use them for work and folders you're fine with it touching while you're not watching.
+  tools *without asking*. Only use them for work and folders you're fine with it touching while you're away.
 - **The folder limit and overnight guards are speed bumps, not a real sandbox.** A determined or mistaken command
   can still get outside them. Don't run unattended on a machine with irreplaceable data.
-- **Remote access exposes your PC.** With the phone app on, the login token is the *only* thing protecting it -
+- **Remote access exposes your PC.** With the phone app on, the login token is the *only* thing protecting it —
   anyone with the token and a network path can drive your computer. Keep it on a private network like
   [Tailscale](https://tailscale.com), never share the token, and change it if it leaks.
 - **Web content can try to trick it (prompt injection).** Pages and files it reads may contain text aimed at the AI
@@ -32,264 +56,304 @@ understand these before you turn features on:
 - **Uncensored brains.** Auto mode uses a minimally-filtered local model (Hermes 3) that will answer things a
   safety-tuned model won't. It runs on your hardware; you are responsible for what you ask and do with it.
 - **Your notification topic is semi-public.** Anyone who knows your ntfy topic name can read notifications you send
-  - keep it secret.
+  — keep it secret.
 - **The apps are unsigned.** Windows SmartScreen will warn on first run ("unknown publisher"). Only run builds you
-  trust - and that cuts both ways for anyone you share this with.
+  trust — and that cuts both ways for anyone you share this with.
 - **No warranty.** This is early, personal software. Bugs happen. Use it on a machine you can afford to have make
   mistakes, and keep backups.
 
 If you remember one thing: **don't run it with auto-approve, remote access, or overnight on anything you can't
-afford to lose - and keep backups.**
+afford to lose — and keep backups.**
+
+## What you need
+
+- **Windows 10 or 11.** (The code is mostly cross-platform Python, but the installer, shortcuts and a few helpers
+  are Windows-only.)
+- **[Ollama](https://ollama.com)** — free, runs the local AI models. Install it once; Golem talks to it.
+- **A GPU helps a lot.** An NVIDIA card with 8 GB+ of VRAM runs good models fast. No GPU? It still works on the
+  CPU, just slowly, with a small model.
+- **Disk space** for whichever model you pull (roughly 2–9 GB each).
+- **Python is only needed if you run from source** — the installer bundles everything, so end users need no Python.
+- Optional: an [Anthropic API key](https://console.anthropic.com) if you want to use Claude as the brain instead
+  of a local model (this one costs money per use and sends your prompts to Anthropic).
+
+## Quick start
+
+**The easy way (installed):**
+
+1. Install **Ollama** from [ollama.com](https://ollama.com) and let it start.
+2. Run **Golem-setup.exe** and finish the installer. You get a **Golem Builder** shortcut on your desktop and in
+   the Start Menu. (On first launch Windows SmartScreen may warn because the app is unsigned — click
+   **More info → Run anyway**.)
+3. Open **Golem Builder**. It detects your GPU and recommends a model; click **Pull** to download it, tick the
+   abilities you want, give it a name and personality, then **Save**.
+4. Click **Save & Launch agent** — your agent opens in its own chat window. Talk to it.
+
+**From source (developers):** see [Running and building from source](#running-and-building-from-source).
+
+## The three apps
+
+| App | File / exe | What it's for |
+|---|---|---|
+| **Golem Builder** | `Golem-Builder.exe` / `builder.py` | Set the agent up with checkboxes: pick the brain, toggle features, choose folders, write a personality, turn on phone access, install add-ons. Saves `agent_config.json`. |
+| **Golem** (agent window) | `Golem.exe` / `agent_gui.py` | A desktop chat window you talk to the agent in. Launches the core and shows the conversation as chat bubbles, with Allow / Deny buttons for permissions. |
+| **core** | `golem-core.exe` / `agent.py` | The agent engine itself — the loop, the tools, the model calls. The window runs this; you can also run it directly from the command line. |
 
 ## How it works
 
 1. You type a task.
-2. The program sends it to Claude together with a list of tools.
-3. Claude answers with text and/or tool calls (e.g. `run_shell`, `edit_file`).
-4. The program runs each tool. It asks you first for anything that changes your machine, then sends the results back.
-5. Steps 3-4 repeat until Claude stops calling tools.
+2. The program sends it to the model (local via Ollama, or Claude) together with a list of tools.
+3. The model answers with text and/or tool calls (e.g. `run_shell`, `edit_file`).
+4. The program runs each tool. It asks you first for anything that changes your machine, then sends the results
+   back to the model.
+5. Steps 3–4 repeat until the model stops calling tools.
 
-That loop is the whole trick behind "taking over your PC". The model only ever *asks*; your code decides what actually runs.
+That loop is the whole trick behind "taking over your PC". The model only ever *asks*; the program decides what
+actually runs — which is why permission prompts (and the folder limit) are your real safety controls. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for the technical details.
 
-## The Builder (no commands needed)
+## The Builder
 
-Don't want to remember flags? Run the **Builder**, a desktop app that puts the whole agent behind checkboxes:
-pick a brain (and pull a model through Ollama right there), tick the abilities you want, give it a name and a
-personality, turn on phone access, then **Save & Launch**.
+The Builder puts the whole agent behind checkboxes, so you never need the command line. Its tabs:
 
-```
-pip install PySide6
-python builder.py
-```
+- **Brain** — detect your GPU and apply a recommended model, choose **Auto** (switches brains per task), one local
+  model, or Claude; and pull any model: browse the **Ollama library** and **Hugging Face**, or pull a GGUF
+  directly with `ollama pull hf.co/USER/REPO`.
+- **Features** — tick the abilities the agent should have (each adds only its own tools). All optional.
+- **Folders** — restrict where the agent may create, edit, move or delete files (see below).
+- **Personality** — a name and a short description of how it should talk; presets included.
+- **Phone** — turn on phone access and set the login token.
+- **Add-ons** — install the image/sound pack, or enable the REA reverse-engineering tools.
 
-It reads and writes `agent_config.json` next to `agent.py`, and the agent runs that config with
-`python agent.py --config agent_config.json`. So the Builder and the command line are interchangeable - build it
-in the GUI, or hand-edit the JSON, whichever you like. Every feature is optional: you can make anything from a bare
-chat up to a fully loaded agent.
+**Save** writes `agent_config.json`; **Save & Launch agent** opens the chat window; **Save & Launch phone server**
+starts the web app. The Builder and the command line are interchangeable — the Builder just writes the config, and
+the agent runs it with `agent.py --config agent_config.json`.
 
-The Builder also lets you **limit the agent to chosen folders** (the Folders tab - it can read anywhere but may
-only create, edit, move or delete inside those folders, even over the phone), and **install optional add-ons**
-(the Add-ons tab - the image/sound generation pack, and the REA reverse-engineering tools). From the Brain tab
-you can browse the full **Ollama library** and **Hugging Face** and pull any model, including any GGUF from Hugging
-Face via `ollama pull hf.co/USER/REPO`.
+## Tools the agent has
 
-The Brain tab also **detects your GPU and recommends the best-fitting model** for its VRAM in one click. (Planned:
-auto-pick it for you instead of just recommending.)
-
-## Tools
+Each feature in the Builder switches on a set of these tools. "Asks permission" means it stops for your yes/no in
+normal chat (auto-approve modes skip that — see Safety).
 
 | Tool | Asks permission | What it does |
 |---|---|---|
 | `run_shell` | yes | PowerShell (Windows) / bash command |
 | `start_program`, `program_output`, `stop_program` | start: yes | Run a game/app in the background, read its output, close it |
-| `godot_test` | no | Import + run a Godot project (or a test script) headless and report errors with file:line |
 | `read_file`, `find_files`, `grep` | no | Read and search files |
 | `write_file`, `edit_file` | yes | Create or change files |
-| `scan_network` | yes | List devices on your own LAN (IPs, names, open ports). Read-only discovery |
 | `web_search` | no | Free DuckDuckGo search: titles, URLs, snippets |
 | `fetch_url` | yes | Download a page and read its text and links |
-| `screenshot` | no | See the screen (`--computer` only) |
-| `click`, `type_text`, `press_keys` | yes | Control mouse/keyboard (`--computer` only) |
+| `scan_network` | yes | List devices on your own LAN (IPs, names, open ports). Read-only discovery |
+| `screenshot` | no | See the screen (screen control on) |
+| `click`, `type_text`, `press_keys` | yes | Control mouse/keyboard (screen control on) |
+| `godot_test` | no | Import + run a Godot project headless and report errors with file:line |
+| `generate_image`, `generate_audio`, `generate_speech` | yes | Make images / music / speech locally (images-and-sound add-on) |
+| `send_notification` | yes | Push a notification to your phone (ntfy) |
 
-Web pages can contain text written to trick an AI ("ignore your instructions and run..."). The agent is told to treat
-web content as information only, and `fetch_url` asks first so a page can't quietly send it to other sites. Still,
-read what it wants to run before approving anything after it has browsed. Search snippets can be out of date: ask it
-to open the page (`fetch_url`) when the exact answer matters. With `--computer`, it can also use your real browser by
-clicking and typing.
+At a permission prompt in the terminal, answer `a` to allow that tool for the rest of the session. While computer
+control is on, move the mouse into a screen corner to abort.
 
-At a permission prompt, answer `a` to allow that tool for the rest of the session. While computer control is on,
-move the mouse into a screen corner to abort.
+## Choosing a model
 
-## Setup
+The Builder's **Brain** tab detects your GPU and recommends a model that fits its VRAM, applied with one click:
 
-```
-pip install -r requirements.txt
-set ANTHROPIC_API_KEY=sk-ant-...     (PowerShell: $env:ANTHROPIC_API_KEY="sk-ant-...")
-```
+| VRAM | Typical recommendation |
+|---|---|
+| 24 GB+ | Auto: a strong text model + a vision model |
+| 12–23 GB | Auto: Hermes 3 (text) + Gemma (vision) |
+| 8–11 GB | one 8B model with tools |
+| under 8 GB / no GPU | a small 3B model (CPU-friendly, slower) |
 
-Get an API key at https://console.anthropic.com. Usage is billed per token.
-
-## Run
-
-```
-python agent.py                         # interactive chat
-python agent.py "summarize this folder" # one task, then exit
-python agent.py --computer              # also enable screen/mouse/keyboard
-python agent.py --yes                   # skip permission prompts (risky)
-```
+- Any Ollama model with **tools** support works. For screen control the model also needs **vision**.
+- Bigger models follow multi-step tasks better; models larger than your VRAM spill to the CPU and crawl — check
+  `ollama ps` for `100% GPU`.
+- **Auto mode** picks per prompt: a fast, uncensored text model for normal work, and a vision model automatically
+  when the task needs to see the screen or an image. Set the two with the `TEXT_MODEL` / `VISION_MODEL` env vars.
+- Local models are weaker than Claude at long, multi-step tasks: expect the odd wrong tool argument, and re-run or
+  rephrase when that happens.
 
 ## Personality
 
-Edit `personality.txt` to change the agent's name, voice and attitude, then restart it. It's plain text, loaded
-into the system prompt. It sets how the agent *talks*, not its judgement — it still tests its work, asks permission,
-and refuses unsafe things. A small local model follows a light, short personality better than a long, elaborate one.
+Give the agent a name and a voice in the Builder's Personality tab (or edit `personality.txt`). It's plain text
+loaded into the system prompt. It sets how the agent *talks*, not its judgement — it still tests its work, asks
+permission, and refuses unsafe things. A small local model follows a short, light personality better than a long
+one.
 
-## Free local mode (no API key, no tokens billed)
+## Limiting it to folders
 
-Runs the same loop against a model on your own GPU through [Ollama](https://ollama.com):
-
-```
-python agent.py --local gemma4:12b --computer
-```
-
-Recommended on a 16 GB GPU: `gemma4:12b`. It has vision + tools, is about 8 GB, runs fully on the GPU, and measured
-~55 tokens/sec. Models bigger than your GPU memory spill onto the CPU and crawl: `qwen3.8:27b` (18 GB loaded) ran 26% on the CPU
-at ~2.6 tokens/sec. Check with `ollama ps`: you want `100% GPU`.
-
-- Any Ollama model with **tools** support works. Bigger models follow multi-step tasks better.
-- For `--computer`, the model also needs **vision**, or it can't read the screenshots (`qwen3` is text-only).
-- Local models are much weaker than Claude at long, multi-step tasks: expect occasional wrong tool arguments
-  or off-target replies, and re-run or rephrase when that happens.
-- Set `OLLAMA_HOST` if Ollama runs somewhere other than `http://localhost:11434`.
-- Local models get a 64K-token context by default (`--ctx` to change; Ollama's own default is only 4K).
-
-### Auto brain-switching
-
-Don't want to pick a model? Run `--local auto` and the agent chooses per prompt: a fast, **uncensored** text
-model (Hermes 3) for normal work, and a **vision** model (Gemma) automatically whenever the task needs to see
-the screen or a generated image. It tells you which brain it used each turn.
-
-```
-python agent.py --local auto --computer
-```
-
-- Set the two models with `--text-model` / `--vision-model` (or the `TEXT_MODEL` / `VISION_MODEL` env vars).
-- Both stay loaded in VRAM once used (8 GB + 5 GB fits your 16 GB), so switching is instant.
-- Vision is only chosen when `--computer` is on - otherwise there's no screen to look at, so everything uses
-  the fast uncensored model.
-- About "uncensored": fully-stripped models (e.g. Dolphin) usually lose tool-calling and break the agent -
-  Hermes 3 stays minimally restricted *and* keeps tools working. Any model whose `ollama show` lists `tools`
-  works as the text model; it also needs `vision` to be the vision model.
-
-## Reviving an old device
-
-The agent can help bring an aging machine or gadget back to life along legitimate paths:
-
-- **`scan_network`** shows what's on your own network, so you can identify a device and its open services.
-- **REA** (via `mcp_call`) reverse-engineers firmware or app files **you already have** — downloaded from the
-  maker, or pulled off a device you own — so you can understand how it works (e.g. where it loads ads).
-- Use a device's **official** channels: its update tool, a documented debug mode (ADB on Android TVs), a USB
-  reflash, or a custom-firmware project for that exact model.
-- For ads on a smart TV, blocking the ad servers at the network level (e.g. Pi-hole) is usually simpler and
-  safer than reflashing.
-
-The agent will not break into devices over the network. Discovery and analysis only — the access has to come
-through a door the device legitimately offers.
-
-## Godot
-
-The agent finds Godot automatically (your Steam copy, PATH, Downloads, Program Files) and tells the model where it is.
-To point it at a different copy, set the `GODOT` environment variable to the `.exe`. It is told to:
-
-- write Godot 4 GDScript (not Godot 3), and build most nodes in code rather than in hand-written `.tscn` files;
-- run `godot_test` after every change and fix every error it reports;
-- write `tests/test_*.gd` scripts (`extends SceneTree`, `assert()`, then `quit()`) for game logic;
-- open the game in a window with `start_program` and take a screenshot to check how it looks (needs `--computer`).
-
-```
-python agent.py --local gemma4:12b --computer --overnight C:\Projects\my-godot-game --hours 12 "Make a Godot 4 top-down shooter with ..."
-```
-
-Open the finished project in the Godot editor as usual (Import, then pick its `project.godot`).
-
-## Long unattended runs (overnight or for days)
-
-```
-python agent.py --local gemma4:12b --computer --overnight C:\Projects\my-game --hours 168 "Build a 2D platformer in pygame with 3 levels, a menu and sound."
-```
-
-- **Stays in one folder.** File tools refuse paths outside it; shell commands that delete/move things outside it, or
-  system commands (shutdown, format, registry, firewall...), are blocked. This is a speed bump, not a sandbox: a
-  determined command can still get around it, so don't run it on a PC with things you can't afford to lose
-  without a backup.
-- **No permission prompts**, and no mouse clicking or typing (screenshots still work with `--computer`).
-- **Tests its own work:** writes and runs automated tests, and starts the game in the background to check output and
-  take screenshots.
-- **Keeps notes in `PROGRESS.md`** in the project folder. When its memory fills up it starts a fresh conversation from
-  those notes. If the run stops (Ctrl+C, crash, Windows Update reboot), run the same command again and it resumes.
-- **Keeps the PC awake** while running, and stops when it says `TASK COMPLETE`, when the `--hours` limit is reached,
-  or after 3 rounds where it stopped doing anything.
-- **Everything is logged** to `logs\` next to `agent.py`. Read the newest file in the morning.
-- Plug in the laptop, and expect a small local model to need several runs and clear, specific instructions for big
-  projects. Break a big app into stages ("first the menu and player movement") for the best results.
-
-## Making images and sound (local, free)
-
-The agent can generate game assets on your own GPU, with small models that fit alongside the local LLM:
-
-| Tool | Makes | Model |
-|---|---|---|
-| `generate_image` | a PNG; `transparent=true` cuts out the background for a sprite (RGBA) | Stable Diffusion 1.5 (~2 GB) |
-| `generate_audio` | a `.wav` of music or a sound effect | MusicGen-small (~1.2 GB) |
-| `generate_speech` | a `.wav` of spoken text | Piper (tiny) |
-
-These run in their own process (in `gen/`), so their heavy libraries stay out of the agent and the GPU memory
-is freed as soon as each one finishes. Install them once into a separate environment:
-
-```
-py -3.13 -m venv gen\.venv
-gen\.venv\Scripts\pip install --index-url https://download.pytorch.org/whl/cu128 torch torchaudio
-gen\.venv\Scripts\pip install -r gen\requirements.txt
-```
-
-Install `torch` **first**, with that `--index-url` line - it forces the CUDA 12.8 build, which is what an RTX
-50-series (Blackwell) card needs. If torch comes from plain PyPI you get the CPU-only build and generation
-crawls. Use Python 3.13 (torch has no 3.14 wheels yet); on an older GPU pick your CUDA version from
-https://pytorch.org/get-started/locally/. The first use of each tool downloads its model
-(a minute or so); after that it's quick. SD 1.5 is small and really meant for sprites and simple art - describe
-things concretely ("a small sleek red spaceship seen from directly above") and regenerate from the preview the
-tool hands back. For sharper results later, drop a bigger checkpoint (SDXL) into `gen_image.py`'s `--model`.
+In the **Folders** tab, list the folders the agent is allowed to change. When the list is non-empty, the agent may
+only **create, edit, move or delete** inside those folders — in every mode, including over the phone. It can still
+*read* files elsewhere. Leave the list empty to let it work anywhere (in normal chat it still asks before each
+change). Remember this is a speed bump, not a hard sandbox (see Safety).
 
 ## Using it from your phone
 
-Run the agent as a small web app and drive it from your phone's browser:
+Turn on phone access in the Builder (or run `agent.py --config agent_config.json --serve`). It runs as a small web
+app and prints the address to open and a one-time **login token**. On your phone, open the address, paste the
+token once, and chat — each task runs on your PC and the reply comes back.
 
-```
-python agent.py --local gemma4:12b --serve
-```
+**Reach it from anywhere with [Tailscale](https://tailscale.com):** install Tailscale on the PC and the phone and
+sign both into the same account — that puts them on one private network with nothing exposed to the public
+internet. Then use the `100.x` address it prints.
 
-It prints the addresses to open and a one-time **login token** (set your own with `--token`). On the phone,
-open the address, paste the token once, and type tasks - each one runs on your PC and the reply comes back in
-the chat. It binds all network interfaces (`--host`/`--port` to change) but every request needs the token.
+Because nobody is at the keyboard to answer prompts, serving **auto-approves** tool calls, with the overnight
+guards still on (system commands and out-of-folder deletes blocked). The token is the only thing guarding it — keep
+it off untrusted networks. One task runs at a time, and the PC is kept awake while serving.
 
-**Reach it from anywhere with [Tailscale](https://tailscale.com):** install Tailscale on both the PC and the
-phone and sign both into the same account - that puts them on one private network with no ports forwarded and
-nothing exposed to the public internet. Then use the `100.x` address the agent prints. Keep the web app off any
-untrusted network: the token is the only thing guarding it.
+## Phone notifications
 
-Because nobody is at the keyboard to answer prompts, `--serve` **auto-approves** tool calls (like `--yes`), with
-the overnight guards still on (system commands and deletes outside the folder are blocked). To confine it to one
-project, add `--overnight C:\Projects\my-game` alongside `--serve`. One task runs at a time. While serving, the PC
-is kept awake so it can't drop offline by going to sleep.
+Golem can push a notification to your phone — handy for "overnight build finished" or "I'm stuck and need you". It
+uses [ntfy](https://ntfy.sh): free, open-source, no account.
 
-## Getting notified on your phone
+1. Install the **ntfy** app (iOS / Android) and subscribe to the secret topic in `ntfy_topic.txt` (a random one is
+   generated for you). Anyone who knows the topic can read it, so keep the name secret.
+2. That's it — the agent notifies you on its own when a long job finishes or it's stuck, and you can tell it to
+   "text me when you're done". To self-host, set the `NTFY_SERVER` environment variable.
 
-The agent can push a notification to your phone - handy for "overnight build finished" or "I'm stuck and need
-you" while you're away. It uses [ntfy](https://ntfy.sh): free, open-source, no account, and self-hostable later.
+## Running on a schedule
 
-1. Install the **ntfy** app (iOS / Android) and subscribe to the secret topic in `ntfy_topic.txt` (a random one
-   was generated for you). Anyone who knows the topic can read it, so keep the name secret.
-2. That's it - the agent calls `send_notification` on its own when it finishes or gets stuck, and you can ask it
-   to "text me when you're done". To self-host instead, set the `NTFY_SERVER` environment variable to your server.
-
-## Doing things on a schedule
-
-Have the agent run a task at the same time every day. It registers a Windows Task Scheduler job (so it still
-fires after a reboot) that launches the agent unattended with a saved task, and pings your phone when it's done.
+Have the agent run a task at the same time every day. It registers a Windows Task Scheduler job (so it still fires
+after a reboot), runs unattended, and pings your phone when done.
 
 ```
 REM every night at 2am, work on the game for 4 hours in that folder
 python agent.py --add-job game --at 02:00 --local gemma4:12b --overnight C:\Projects\space-shooter --hours 4 "work through the next milestone in GAME.md"
-
-REM every morning at 7am, a quick one-off task (no folder = a single unattended run)
-python agent.py --add-job brief --at 07:00 --local gemma4:12b "summarize what changed in C:\Projects\space-shooter yesterday and text me the highlights"
 
 python agent.py --list-jobs            REM see what's scheduled
 python agent.py --remove-job game      REM cancel one
 python agent.py --run-job game         REM run it right now to test
 ```
 
-A job with `--overnight FOLDER` runs confined to that folder with snapshots and the overnight guards (good for
-long builds); without a folder it's a single unattended pass (good for a quick daily task). The PC must be on and
-logged in at that time - it can be locked, but a logged-out machine won't run it (that would need storing your
-password). Each job gets a launcher in `jobs\` you can double-click to test, and output lands in `logs\`.
+The PC must be on and logged in at that time (it can be locked). Each job gets a launcher in `jobs\` you can
+double-click to test, and output lands in `logs\`.
+
+## Long unattended runs
+
+For big jobs (build a game overnight, or over days), confine the agent to one folder and let it work without
+prompts:
+
+```
+python agent.py --local gemma4:12b --overnight C:\Projects\my-game --hours 168 "Build a 2D platformer in pygame with 3 levels, a menu and sound."
+```
+
+- **Stays in one folder** — file tools refuse paths outside it; out-of-folder deletes and system commands are
+  blocked (a speed bump, not a sandbox — keep backups).
+- **No permission prompts**, and no mouse/keyboard control (screenshots still work).
+- **Tests its own work**, keeps notes in `PROGRESS.md`, and resumes the same command if it's interrupted.
+- **Keeps the PC awake**, stops at `TASK COMPLETE`, the `--hours` limit, or after it stalls. Everything is logged
+  to `logs\`.
+
+## Add-on: images and sound
+
+Install from the Builder's **Add-ons** tab (or set up `gen/` by hand). Runs small models on your GPU, in their own
+process so their heavy libraries stay out of the agent:
+
+| Tool | Makes | Model |
+|---|---|---|
+| `generate_image` | a PNG; `transparent=true` cuts out the background for a sprite | Stable Diffusion 1.5 (~2 GB) |
+| `generate_audio` | a `.wav` of music or a sound effect | MusicGen-small (~1.2 GB) |
+| `generate_speech` | a `.wav` of spoken text | Piper (tiny) |
+
+Needs Python 3.13 and a CUDA build of PyTorch; the Add-ons installer handles it, and the first use of each tool
+downloads its model.
+
+## Add-on: reverse engineering (REA)
+
+Enable in the **Add-ons** tab. Adds the [REA](https://www.npmjs.com/package/rea-agents) toolset (analyse binaries,
+apps, firmware, web pages) as an MCP server, run through `npx`, so it needs Node.js. Golem uses it only for
+discovery and analysis of files and devices **you own** — it will not break into anything over the network.
+
+## Godot game-making
+
+The agent finds Godot automatically (Steam copy, PATH, Downloads, Program Files; or set the `GODOT` env var). It's
+told to write Godot 4 GDScript, run `godot_test` after every change and fix the errors, write `tests/test_*.gd`
+scripts, and open the game to screenshot it (needs screen control). Open the finished project in the Godot editor
+as usual.
+
+## The config file
+
+The Builder reads and writes `agent_config.json` next to the agent. You can also hand-edit it:
+
+```json
+{
+  "name": "Golem",
+  "model": {
+    "mode": "auto",              // "auto" | "local" | "claude"
+    "local_model": "gemma4:12b", // used when mode = "local"
+    "text_model": "hermes3",     // auto mode: the work brain
+    "vision_model": "gemma4:12b",// auto mode: the sees-the-screen brain
+    "ctx": 65536
+  },
+  "features": {                  // every ability is opt-in
+    "shell": true, "files": true, "web": true, "computer": true,
+    "network_scan": false, "godot": true, "image_gen": true,
+    "audio_gen": true, "speech": true, "notifications": true
+  },
+  "serve": { "enabled": false, "host": "0.0.0.0", "port": 8765, "token": "" },
+  "folders": [],                 // if non-empty, writes/edits/deletes stay inside these
+  "personality": ""              // written to personality.txt on launch
+}
+```
+
+## Running and building from source
+
+```
+git clone <this repo> && cd Golem
+python -m venv .venv && .venv\Scripts\activate
+pip install -r requirements.txt     # the agent + the Builder (PySide6)
+python builder.py                   # open the Builder
+```
+
+Run the agent directly without the GUI:
+
+```
+python agent.py                              # interactive chat (needs ANTHROPIC_API_KEY, or use --local)
+python agent.py --local gemma4:12b --computer
+python agent.py --config agent_config.json --chat
+python agent.py "summarize this folder"      # one task, then exit
+```
+
+Build the three exes and the installer (Windows):
+
+```
+pip install pyinstaller
+pyinstaller --noconfirm --onefile --console   --collect-all anthropic --icon icon.ico --name golem-core    agent.py
+pyinstaller --noconfirm --onefile --windowed                      --icon icon.ico --name Golem          agent_gui.py
+pyinstaller --noconfirm --onefile --windowed                      --icon icon.ico --name Golem-Builder   builder.py
+"C:\Path\to\ISCC.exe" golem.iss              # Inno Setup -> installer\Golem-setup.exe
+```
+
+Regenerate the app icon with `python make_icon.py`.
+
+## Project layout
+
+```
+agent.py          the agent engine: the loop, tools, model calls, config, scheduling, phone server
+agent_gui.py      the desktop chat window (Golem.exe)
+builder.py        the setup GUI (Golem-Builder.exe)
+gen/              image/audio/speech generators, run in their own venv
+golem.iss         Inno Setup script that builds the installer
+icon.ico          the app icon  (make_icon.py regenerates it)
+requirements.txt  Python dependencies for the agent + Builder
+mcp_servers.json  optional: MCP servers to load (e.g. REA)
+personality.txt   the agent's voice (written by the Builder)
+agent_config.json your saved setup (git-ignored; holds your phone token)
+logs/             run logs
+```
+
+## Troubleshooting & FAQ
+
+- **"Windows protected your PC" / unknown publisher.** Expected — the apps are unsigned. Click **More info → Run
+  anyway**. It stops asking after the first time.
+- **"Ollama not found" / the agent can't reach a model.** Install [Ollama](https://ollama.com) and make sure it's
+  running. If it runs elsewhere, set `OLLAMA_HOST`.
+- **It's really slow.** The model is probably bigger than your VRAM and spilling to the CPU. Pick the Builder's
+  recommended model, or a smaller one; check `ollama ps` shows `100% GPU`.
+- **No NVIDIA GPU.** It still works with a small (3B) model, just slower on the CPU.
+- **It picks wrong tools or goes off-target.** Local models are weaker than Claude at long tasks — rephrase, retry,
+  use a bigger model, or switch the brain to Claude.
+- **Where are the logs?** In `logs\` next to the app. Read the newest file.
+- **Is my data private?** Yes by default — the model runs locally. Exceptions: `web_search` / `fetch_url` reach the
+  internet, Claude API mode sends prompts to Anthropic, and phone notifications go through the ntfy server.
+- **How do I limit what it can touch?** Use the Folders tab (and don't use auto-approve/serve/overnight for
+  anything sensitive).
+- **Start over.** Delete `agent_config.json` — the Builder recreates defaults.
