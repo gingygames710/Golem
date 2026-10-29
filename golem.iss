@@ -27,6 +27,7 @@ SetupIconFile=icon.ico
 UninstallDisplayIcon={app}\{#BuilderExe}
 
 [Tasks]
+Name: "desktopagent"; Description: "Create a desktop shortcut for Golem (the chat agent)"; GroupDescription: "Additional icons:"
 Name: "desktopicon"; Description: "Create a desktop shortcut for the Builder"; GroupDescription: "Additional icons:"
 
 [Files]
@@ -40,6 +41,7 @@ Source: "README.md";          DestDir: "{app}"; Flags: ignoreversion isreadme
 Name: "{group}\Golem Builder";        Filename: "{app}\{#BuilderExe}"
 Name: "{group}\Golem (chat)";         Filename: "{app}\{#AgentExe}"
 Name: "{group}\Uninstall Golem";      Filename: "{uninstallexe}"
+Name: "{autodesktop}\Golem";          Filename: "{app}\{#AgentExe}"; Tasks: desktopagent
 Name: "{autodesktop}\Golem Builder";  Filename: "{app}\{#BuilderExe}"; Tasks: desktopicon
 
 [Run]
