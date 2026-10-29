@@ -1594,6 +1594,8 @@ def main():
     parser.add_argument("--vision-model", default="", help="Vision model used by --local auto")
     parser.add_argument("--config", metavar="PATH",
                         help="Load an agent built with the Builder GUI (e.g. agent_config.json)")
+    parser.add_argument("--chat", action="store_true",
+                        help="Force interactive chat even if the config turns on phone serving")
     args = parser.parse_args()
 
     # A Builder config fills in the flags (model, features, personality, phone access) up front;
@@ -1601,6 +1603,8 @@ def main():
     enabled_tools = None
     if args.config:
         enabled_tools = apply_config(args, json.loads(Path(args.config).read_text(encoding="utf-8")))
+    if args.chat:  # the desktop chat window forces interactive mode even if the config enables serving
+        args.serve = False
 
     # Managing the daily schedule: quick, no agent or servers needed.
     if args.list_jobs:

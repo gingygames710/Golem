@@ -428,8 +428,21 @@ class Builder(QWidget):
             QMessageBox.critical(self, "Could not launch", str(e))
 
     def launch_agent(self):
-        # If the config has serve on, agent.py would start the server; warn the user it'll be a chat window.
-        self._launch("Launched the agent in a new window.")
+        # The agent opens in its own desktop chat window (agent_gui.py), never a terminal.
+        self.save()
+        gui = AGENT_DIR / "agent_gui.py"
+        gui_exe = AGENT_DIR / "pc-agent.exe"  # the installed agent window, if present
+        try:
+            if gui_exe.exists():
+                subprocess.Popen([str(gui_exe)], cwd=str(AGENT_DIR))
+            else:
+                pyw = agent_python()
+                if pyw.endswith("python.exe") and os.path.exists(pyw[:-10] + "pythonw.exe"):
+                    pyw = pyw[:-10] + "pythonw.exe"  # no console window for the GUI
+                subprocess.Popen([pyw, str(gui)], cwd=str(AGENT_DIR))
+            self.flash("Launched the agent in its own window.")
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Could not launch", str(e))
 
     def launch_server(self):
         if not self.serve_check.isChecked():
