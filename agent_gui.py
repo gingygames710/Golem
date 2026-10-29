@@ -15,14 +15,20 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QScrollArea, QFrame,
+    QLabel, QLineEdit, QPushButton, QScrollArea, QFrame, QFileDialog,
 )
+
+# Same control-line protocol the core (agent.py) parses to attach an image/file to the next message.
+ATTACH_PREFIX = "\x1dGOLEM_ATTACH\x1d"
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 # When frozen into an .exe, __file__ is a temp extract dir; use the exe's own folder instead.
 if getattr(sys, "frozen", False):
@@ -116,6 +122,7 @@ class AgentWindow(QWidget):
         self.agent_text = ""      # text committed to that bubble
         self.line_buf = ""        # output not yet split into a full line
         self._user_stopped = False  # true when the user pressed Stop (so "stopped" reads intentionally)
+        self.pending = []         # attachments staged for the next message: list of file paths
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -127,8 +134,8 @@ class AgentWindow(QWidget):
         holder = QWidget()
         self.col = QVBoxLayout(holder)
         self.col.setAlignment(Qt.AlignTop)
-        self.col.setContentsMargins(16, 12, 16, 12)
-        self.col.setSpacing(8)
+        self.col.setContentsMargins(18, 14, 18, 14)
+        self.col.setSpacing(10)
         self.scroll.setWidget(holder)
         root.addWidget(self.scroll, 1)
         self.scroll.verticalScrollBar().rangeChanged.connect(
@@ -195,9 +202,28 @@ class AgentWindow(QWidget):
     def _composer(self) -> QWidget:
         bar = QFrame()
         bar.setStyleSheet(f"background:{PANEL}; border-top:1px solid #20242e;")
-        h = QHBoxLayout(bar)
-        h.setContentsMargins(16, 12, 16, 14)
-        h.setSpacing(10)
+        outer = QVBoxLayout(bar)
+        outer.setContentsMargins(16, 10, 16, 14)
+        outer.setSpacing(8)
+
+        # A row of chips for files/images staged for the next message (hidden until something is attached).
+        self.attach_row = QFrame()
+        self.attach_flow = QHBoxLayout(self.attach_row)
+        self.attach_flow.setContentsMargins(0, 0, 0, 0)
+        self.attach_flow.setSpacing(6)
+        self.attach_flow.setAlignment(Qt.AlignLeft)
+        self.attach_row.setVisible(False)
+        outer.addWidget(self.attach_row)
+
+        h = QHBoxLayout()
+        h.setSpacing(8)
+        self.attach_btn = self._icon_button("📎", "Attach a file or image")
+        self.attach_btn.clicked.connect(self.attach_file)
+        h.addWidget(self.attach_btn)
+        self.shot_btn = self._icon_button("🖼", "Send a screenshot")
+        self.shot_btn.clicked.connect(self.attach_screenshot)
+        h.addWidget(self.shot_btn)
+
         self.entry = QLineEdit()
         self.entry.setPlaceholderText(f"Message {self.name}...")
         self.entry.setStyleSheet(
@@ -205,13 +231,26 @@ class AgentWindow(QWidget):
             "border-radius:12px; font-size:14px;")
         self.entry.returnPressed.connect(self.send)
         h.addWidget(self.entry, 1)
+
         self.send_btn = QPushButton("Send")
         self.send_btn.setCursor(Qt.PointingHandCursor)
         self.send_btn.setStyleSheet(
-            f"background:{ACCENT}; color:white; padding:11px 20px; border:none; border-radius:12px; font-weight:600;")
+            f"QPushButton {{ background:{ACCENT}; color:white; padding:11px 20px; border:none; "
+            "border-radius:12px; font-weight:600; }} QPushButton:hover { background:#7c7ff5; }")
         self.send_btn.clicked.connect(self.send)
         h.addWidget(self.send_btn)
+        outer.addLayout(h)
         return bar
+
+    def _icon_button(self, glyph: str, tip: str) -> QPushButton:
+        b = QPushButton(glyph)
+        b.setCursor(Qt.PointingHandCursor)
+        b.setToolTip(tip)
+        b.setFixedSize(42, 42)
+        b.setStyleSheet(
+            "QPushButton { background:#1b1f27; color:#c7ccda; border:1px solid #2a2f3a; "
+            "border-radius:12px; font-size:18px; } QPushButton:hover { background:#232834; }")
+        return b
 
     def _bubble(self, text: str, who: str) -> QLabel:
         row = QWidget()
@@ -281,6 +320,8 @@ class AgentWindow(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         self.cur_agent, self.agent_text, self.line_buf = None, "", ""
+        self.pending.clear()
+        self._render_attachments()
         self.perm_bar.setVisible(False)
         self.start_agent()
 
@@ -358,9 +399,84 @@ class AgentWindow(QWidget):
 
     # ---------------------------------------------------------------- input
 
+    # ---------------------------------------------------------------- attachments
+
+    def attach_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Attach a file or image", "",
+            "All files (*.*);;Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp)")
+        if path:
+            self._stage(path)
+
+    def attach_screenshot(self):
+        """Hide the window briefly, grab the whole screen, then stage it as an image."""
+        if not self._running():
+            self._bubble("The agent isn't running - click Restart.", "system")
+            return
+        self.showMinimized()
+        QTimer.singleShot(350, self._grab_screen)
+
+    def _grab_screen(self):
+        try:
+            screen = QApplication.primaryScreen()
+            pix = screen.grabWindow(0)
+            out = Path(tempfile.gettempdir()) / f"golem-shot-{int(time.time())}.png"
+            pix.save(str(out), "PNG")
+            self._stage(str(out))
+        except Exception as e:  # noqa: BLE001
+            self._bubble(f"Could not take a screenshot: {e}", "system")
+        finally:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+
+    def _stage(self, path: str):
+        self.pending.append(path)
+        self._render_attachments()
+
+    def _render_attachments(self):
+        while self.attach_flow.count():
+            item = self.attach_flow.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for path in self.pending:
+            self.attach_flow.addWidget(self._attach_chip(path))
+        self.attach_flow.addStretch(1)
+        self.attach_row.setVisible(bool(self.pending))
+
+    def _attach_chip(self, path: str) -> QWidget:
+        chip = QFrame()
+        chip.setStyleSheet("background:#171f2e; border:1px solid #2b3a55; border-radius:10px;")
+        cl = QHBoxLayout(chip)
+        cl.setContentsMargins(8, 4, 6, 4)
+        cl.setSpacing(6)
+        is_img = Path(path).suffix.lower() in IMAGE_SUFFIXES
+        if is_img:
+            thumb = QLabel()
+            thumb.setPixmap(QPixmap(path).scaled(28, 28, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+            cl.addWidget(thumb)
+        name = QLabel(("🖼 " if is_img else "📄 ") + Path(path).name)
+        name.setStyleSheet("color:#9fb4d4; font-size:12px; background:transparent; border:none;")
+        cl.addWidget(name)
+        x = QPushButton("✕")
+        x.setCursor(Qt.PointingHandCursor)
+        x.setFixedSize(18, 18)
+        x.setStyleSheet("QPushButton { color:#8b93a7; background:transparent; border:none; font-size:12px; }"
+                        " QPushButton:hover { color:#e7e9f0; }")
+        x.clicked.connect(lambda _=False, p=path: self._unstage(p))
+        cl.addWidget(x)
+        return chip
+
+    def _unstage(self, path: str):
+        if path in self.pending:
+            self.pending.remove(path)
+        self._render_attachments()
+
+    # ---------------------------------------------------------------- send
+
     def send(self):
         text = self.entry.text().strip()
-        if not text:
+        if not text and not self.pending:
             return
         if not self._running():
             self._bubble("The agent isn't running - click Restart.", "system")
@@ -368,8 +484,43 @@ class AgentWindow(QWidget):
         self.entry.clear()
         self.perm_bar.setVisible(False)
         self.cur_agent, self.agent_text = None, ""   # next agent output starts a fresh bubble
-        self._bubble(text, "user")
-        self._write(text)
+        attachments = list(self.pending)
+        self.pending.clear()
+        self._render_attachments()
+        if attachments:
+            if text:
+                self._bubble(text, "user")
+            for path in attachments:
+                self._attachment_bubble(path)
+            payload = {"message": text, "images": [], "files": []}
+            for path in attachments:
+                key = "images" if Path(path).suffix.lower() in IMAGE_SUFFIXES else "files"
+                payload[key].append(path)
+            self._write(ATTACH_PREFIX + json.dumps(payload))
+        else:
+            self._bubble(text, "user")
+            self._write(text)
+
+    def _attachment_bubble(self, path: str):
+        """Show what the user attached, as a right-aligned bubble (thumbnail for an image)."""
+        is_img = Path(path).suffix.lower() in IMAGE_SUFFIXES
+        row = QWidget()
+        hl = QHBoxLayout(row)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.addStretch(1)
+        if is_img:
+            pix = QPixmap(path)
+            if not pix.isNull():
+                lbl = QLabel()
+                lbl.setPixmap(pix.scaledToWidth(min(260, pix.width()), Qt.SmoothTransformation))
+                lbl.setStyleSheet("border-radius:12px;")
+                hl.addWidget(lbl)
+                self.col.addWidget(row)
+                return
+        lbl = QLabel(("🖼 " if is_img else "📄 ") + Path(path).name)
+        lbl.setStyleSheet(f"background:{USER_BG}; color:white; padding:10px 14px; border-radius:14px;")
+        hl.addWidget(lbl)
+        self.col.addWidget(row)
 
     def answer(self, letter: str):
         self.perm_bar.setVisible(False)

@@ -205,6 +205,39 @@ class CmdThread(QThread):
         self.done.emit(0)
 
 
+class DownloadThread(QThread):
+    """Download a file (e.g. the Ollama installer) to disk, reporting progress; empty path = failed."""
+    line = Signal(str)
+    done = Signal(str)
+
+    def __init__(self, url, dest):
+        super().__init__()
+        self.url = url
+        self.dest = dest
+
+    def run(self):
+        try:
+            req = urllib.request.Request(self.url, headers={"User-Agent": "Golem-Builder"})
+            with urllib.request.urlopen(req, timeout=60) as r, open(self.dest, "wb") as f:
+                total = int(r.headers.get("Content-Length") or 0)
+                got = 0
+                while True:
+                    buf = r.read(262144)
+                    if not buf:
+                        break
+                    f.write(buf)
+                    got += len(buf)
+                    mb = got / 1_048_576
+                    if total:
+                        self.line.emit(f"Downloading Ollama... {got * 100 // total}%  ({mb:.0f} MB)")
+                    else:
+                        self.line.emit(f"Downloading Ollama... {mb:.0f} MB")
+            self.done.emit(str(self.dest))
+        except Exception as e:  # noqa: BLE001 - report, don't crash the GUI
+            self.line.emit(f"Download failed: {e}")
+            self.done.emit("")
+
+
 class Builder(QWidget):
     def __init__(self):
         super().__init__()
@@ -215,6 +248,7 @@ class Builder(QWidget):
             self.setWindowIcon(QIcon(str(_ico)))
         self.pull_thread = None
         self.addon_thread = None
+        self.dl_thread = None  # Ollama installer download
         self._rec = None  # the latest GPU model recommendation
         self.cfg = self.load_config()
 
@@ -313,9 +347,13 @@ class Builder(QWidget):
         orow = QHBoxLayout()
         self.ollama_label = QLabel("Checking Ollama...")
         self.ollama_label.setWordWrap(True)
+        self.install_ollama_btn = QPushButton("Install for me")
+        self.install_ollama_btn.setToolTip("Download and run the official Ollama installer from ollama.com")
+        self.install_ollama_btn.clicked.connect(self.install_ollama)
         get_ollama = QPushButton("Get Ollama")
         get_ollama.clicked.connect(lambda: webbrowser.open("https://ollama.com/download"))
         orow.addWidget(self.ollama_label, 1)
+        orow.addWidget(self.install_ollama_btn)
         orow.addWidget(get_ollama)
         lay.addLayout(orow)
 
@@ -476,13 +514,54 @@ class Builder(QWidget):
         self.flash("Applied the recommended model for your GPU.")
 
     def refresh_ollama_status(self):
-        if ollama_running():
+        running = ollama_running()
+        if running:
             n = len(ollama_models())
             self.ollama_label.setText(f"Ollama: running ✓  ({n} model{'' if n == 1 else 's'} installed)")
             self.ollama_label.setStyleSheet("color:#2a7;")
         else:
-            self.ollama_label.setText("Ollama: not found or not running. Click Get Ollama, install and start it, "
-                                      "then Refresh list.")
+            self.ollama_label.setText("Ollama: not found or not running. Click 'Install for me' to set it up "
+                                      "automatically, then Refresh list.")
+            self.ollama_label.setStyleSheet("color:#c60;")
+        # The one-click installer is Windows-only; elsewhere the Get Ollama link still works.
+        if hasattr(self, "install_ollama_btn"):
+            self.install_ollama_btn.setVisible(os.name == "nt" and not running and not self.dl_thread)
+
+    OLLAMA_SETUP_URL = "https://ollama.com/download/OllamaSetup.exe"
+
+    def install_ollama(self):
+        """Download the official OllamaSetup.exe and launch it so the user can click through setup."""
+        if self.dl_thread:
+            return
+        ok = QMessageBox.question(
+            self, "Install Ollama",
+            "This downloads the official Ollama installer (~700 MB) from ollama.com and opens it.\n\n"
+            "Follow its prompts, then come back and click 'Refresh list'. Continue?",
+            QMessageBox.Yes | QMessageBox.No)
+        if ok != QMessageBox.Yes:
+            return
+        dest = Path(os.environ.get("TEMP", str(AGENT_DIR))) / "OllamaSetup.exe"
+        self.install_ollama_btn.setEnabled(False)
+        self.ollama_label.setText("Downloading the Ollama installer...")
+        self.ollama_label.setStyleSheet("color:#2d6cdf;")
+        self.dl_thread = DownloadThread(self.OLLAMA_SETUP_URL, dest)
+        self.dl_thread.line.connect(lambda ln: self.ollama_label.setText(ln))
+        self.dl_thread.done.connect(self._ollama_downloaded)
+        self.dl_thread.start()
+
+    def _ollama_downloaded(self, path: str):
+        self.dl_thread = None
+        self.install_ollama_btn.setEnabled(True)
+        if not path:
+            self.ollama_label.setText("Couldn't download Ollama. Click Get Ollama to install it manually.")
+            self.ollama_label.setStyleSheet("color:#c60;")
+            return
+        try:
+            os.startfile(path)  # launch the installer; the user clicks through it
+            self.ollama_label.setText("Ollama installer opened - follow its steps, then click 'Refresh list'.")
+            self.ollama_label.setStyleSheet("color:#2a7;")
+        except Exception as e:  # noqa: BLE001
+            self.ollama_label.setText(f"Downloaded, but couldn't open the installer ({e}). It's at {path}.")
             self.ollama_label.setStyleSheet("color:#c60;")
 
     # ---------------------------------------------------------------- Features tab
