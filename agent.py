@@ -29,7 +29,8 @@ import anthropic
 MODEL = "claude-opus-5-5"
 OLLAMA_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 IS_WINDOWS = platform.system() == "Windows"
-AGENT_DIR = Path(__file__).resolve().parent
+AGENT_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) \
+    else Path(__file__).resolve().parent  # exe folder when frozen, else this file's folder
 PERSONALITY_FILE = AGENT_DIR / "personality.txt"  # edit this to change how the agent talks
 GEN_DIR = AGENT_DIR / "gen"  # local image/audio generation scripts and their own venv live here
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh")  # free phone push notifications

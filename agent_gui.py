@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
-from PySide6.QtGui import QFont, QTextCursor
+from PySide6.QtGui import QFont, QIcon, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QPlainTextEdit,
@@ -89,6 +89,9 @@ class AgentWindow(QWidget):
         self.name = agent_name()
         self.setWindowTitle(f"{self.name} - pc-agent")
         self.resize(780, 660)
+        _ico = AGENT_DIR / "icon.ico"
+        if _ico.exists():
+            self.setWindowIcon(QIcon(str(_ico)))
         self.setStyleSheet("background:#14161a; color:#d6d9df;")
         self.proc = None
         self.reader = None

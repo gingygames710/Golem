@@ -19,7 +19,7 @@ import secrets
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QRadioButton, QButtonGroup, QComboBox,
@@ -114,6 +114,9 @@ class Builder(QWidget):
         super().__init__()
         self.setWindowTitle("pc-agent Builder")
         self.resize(720, 760)
+        _ico = AGENT_DIR / "icon.ico"
+        if _ico.exists():
+            self.setWindowIcon(QIcon(str(_ico)))
         self.pull_thread = None
         self.cfg = self.load_config()
 
