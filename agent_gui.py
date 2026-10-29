@@ -36,6 +36,7 @@ ICON = AGENT_DIR / "icon.ico"
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")            # colour codes to strip from the console output
 PERMISSION_HINT = re.compile(r"\[y\]es", re.I)   # the agent's permission prompt marker
+TOOLCALL = re.compile(r"^\s*->\s+(\S+)\s*(.*)$")  # the core's per-tool-call line ("  -> run_shell ...")
 CREATE_NO_WINDOW = 0x08000000                    # keep the child process from flashing a console
 
 # Palette - a warm, modern dark theme (not a black terminal).
@@ -114,6 +115,7 @@ class AgentWindow(QWidget):
         self.cur_agent = None     # the QLabel of the agent's in-progress message bubble
         self.agent_text = ""      # text committed to that bubble
         self.line_buf = ""        # output not yet split into a full line
+        self._user_stopped = False  # true when the user pressed Stop (so "stopped" reads intentionally)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -158,6 +160,12 @@ class AgentWindow(QWidget):
         box.addWidget(self.sub)
         h.addLayout(box)
         h.addStretch(1)
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setCursor(Qt.PointingHandCursor)
+        self.stop_btn.setStyleSheet("color:#f0c674; background:transparent; border:1px solid #4a3f2a; "
+                                    "border-radius:8px; padding:6px 12px;")
+        self.stop_btn.clicked.connect(self.stop)
+        h.addWidget(self.stop_btn)
         self.restart_btn = QPushButton("Restart")
         self.restart_btn.setCursor(Qt.PointingHandCursor)
         self.restart_btn.setStyleSheet(
@@ -221,6 +229,12 @@ class AgentWindow(QWidget):
             lbl.setStyleSheet(f"background:{AGENT_BG}; color:{TEXT}; padding:10px 14px; border-radius:14px;")
             hl.addWidget(lbl)
             hl.addStretch(1)
+        elif who == "tool":  # a tool-call chip
+            lbl.setMaximumWidth(560)
+            lbl.setStyleSheet("background:#171f2e; color:#8fb0e0; padding:6px 12px; border-radius:10px; "
+                              "border:1px solid #2b3a55; font-family:Consolas,monospace; font-size:12px;")
+            hl.addWidget(lbl)
+            hl.addStretch(1)
         else:  # system notice
             lbl.setMaximumWidth(680)
             lbl.setStyleSheet(f"color:{MUTED}; font-size:12px; padding:2px;")
@@ -255,12 +269,12 @@ class AgentWindow(QWidget):
             return
         self.reader = Reader(self.proc)
         self.reader.chunk.connect(self.on_chunk)
-        self.reader.ended.connect(lambda: (self._bubble("The agent stopped. Click Restart to run it again.",
-                                                        "system"), self.sub.setText("stopped")))
+        self.reader.ended.connect(self.on_ended)
         self.reader.start()
         self.sub.setText("online")
 
     def restart(self):
+        self._user_stopped = False
         self._terminate()
         while self.col.count():
             item = self.col.takeAt(0)
@@ -279,6 +293,20 @@ class AgentWindow(QWidget):
                 self.proc.kill()
         if self.reader:
             self.reader.wait(2000)
+
+    def on_ended(self):
+        if not self._user_stopped:
+            self._bubble("The agent stopped. Click Restart to run it again.", "system")
+            self.sub.setText("stopped")
+
+    def stop(self):
+        """Halt whatever the agent is doing right now (keeps the transcript)."""
+        if not self._running():
+            return
+        self._user_stopped = True
+        self._terminate()
+        self._bubble("Stopped. Click Restart to chat again.", "system")
+        self.sub.setText("stopped")
 
     # ---------------------------------------------------------------- streaming -> bubbles
 
@@ -300,6 +328,14 @@ class AgentWindow(QWidget):
         if "[y]es" in line:          # the permission prompt itself - the bar handles it
             return
         if not s:
+            return
+        m = TOOLCALL.match(line)
+        if m:                        # a tool call -> a tidy chip, not raw text
+            name, detail = m.group(1), m.group(2).strip()
+            if len(detail) > 60:
+                detail = detail[:57] + "..."
+            self.cur_agent = None
+            self._bubble(f"⚙  {name}" + (f"  {detail}" if detail else ""), "tool")
             return
         if s.startswith("[") or s.startswith("?"):   # a status / permission notice
             self.cur_agent = None

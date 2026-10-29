@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import secrets
+import urllib.request
 import webbrowser
 from pathlib import Path
 
@@ -81,6 +82,16 @@ def ollama_models() -> list:
         return [ln.split()[0] for ln in lines if ln.strip()]
     except Exception:
         return []
+
+
+def ollama_running() -> bool:
+    """True if the Ollama server answers - it must be running to use local models."""
+    try:
+        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+        urllib.request.urlopen(host + "/api/tags", timeout=3)
+        return True
+    except Exception:
+        return False
 
 
 def detect_gpu():
@@ -235,11 +246,15 @@ class Builder(QWidget):
         root.addLayout(bar)
 
         self.load_into_widgets()
-        self.detect_gpu_clicked()  # show the GPU + a recommendation on startup
+        self.detect_gpu_clicked()      # show the GPU + a recommendation on startup
+        self.refresh_ollama_status()
+        if self._fresh:                # first run: apply the GPU recommendation automatically
+            self.apply_recommendation()
 
     # ---------------------------------------------------------------- config I/O
 
     def load_config(self) -> dict:
+        self._fresh = not CONFIG_FILE.exists()  # first run? then auto-apply the GPU recommendation
         try:
             sys.path.insert(0, str(AGENT_DIR))
             import agent  # reuse the single source of truth for the default shape
@@ -294,6 +309,15 @@ class Builder(QWidget):
     def _model_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
+
+        orow = QHBoxLayout()
+        self.ollama_label = QLabel("Checking Ollama...")
+        self.ollama_label.setWordWrap(True)
+        get_ollama = QPushButton("Get Ollama")
+        get_ollama.clicked.connect(lambda: webbrowser.open("https://ollama.com/download"))
+        orow.addWidget(self.ollama_label, 1)
+        orow.addWidget(get_ollama)
+        lay.addLayout(orow)
 
         gpu_box = QGroupBox("Your GPU")
         gl = QVBoxLayout(gpu_box)
@@ -405,6 +429,7 @@ class Builder(QWidget):
             combo.clear()
             combo.addItems(installed)
             combo.setCurrentText(current)
+        self.refresh_ollama_status()
         self.flash(f"Found {len(installed)} installed model(s).")
 
     def pull_model(self):
@@ -449,6 +474,16 @@ class Builder(QWidget):
             self.local_combo.setCurrentText(r["local"])
         self._refresh_model_fields()
         self.flash("Applied the recommended model for your GPU.")
+
+    def refresh_ollama_status(self):
+        if ollama_running():
+            n = len(ollama_models())
+            self.ollama_label.setText(f"Ollama: running ✓  ({n} model{'' if n == 1 else 's'} installed)")
+            self.ollama_label.setStyleSheet("color:#2a7;")
+        else:
+            self.ollama_label.setText("Ollama: not found or not running. Click Get Ollama, install and start it, "
+                                      "then Refresh list.")
+            self.ollama_label.setStyleSheet("color:#c60;")
 
     # ---------------------------------------------------------------- Features tab
 
