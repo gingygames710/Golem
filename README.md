@@ -357,3 +357,7 @@ logs/             run logs
 - **How do I limit what it can touch?** Use the Folders tab (and don't use auto-approve/serve/overnight for
   anything sensitive).
 - **Start over.** Delete `agent_config.json` — the Builder recreates defaults.
+
+## License
+
+[MIT](LICENSE) — free to use, modify and share. No warranty; see the Safety section and the license text.
