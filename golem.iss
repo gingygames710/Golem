@@ -1,9 +1,9 @@
 ; Inno Setup script for Golem. Builds a per-user installer (no admin needed) that installs the
 ; three exes, makes Start-Menu + desktop shortcuts, and points the user at Ollama if it's missing.
-; Compile with:  ISCC.exe golem.iss   ->  installer\Golem-setup.exe
+; Compile with:  ISCC.exe golem.iss   ->  installer\Golem-setup-<version>.exe
 
 #define MyAppName "Golem"
-#define MyAppVersion "0.7.0"
+#define MyAppVersion "0.7.1"
 #define MyAppPublisher "Golem"
 #define BuilderExe "Golem-Builder.exe"
 #define AgentExe "Golem.exe"
@@ -19,7 +19,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=installer
-OutputBaseFilename=Golem-setup
+OutputBaseFilename=Golem-setup-{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern

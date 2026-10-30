@@ -276,7 +276,13 @@ class UpdateCheckThread(QThread):
             with urllib.request.urlopen(req, timeout=10) as r:
                 rel = json.loads(r.read().decode("utf-8"))
             tag = rel.get("tag_name", "")
-            installer = next((a for a in rel.get("assets", []) if a.get("name") == "Golem-setup.exe"), None)
+            # Match the installer by pattern, not an exact name, so a versioned asset like
+            # "Golem-setup-0.7.1.exe" is found too (not just the legacy "Golem-setup.exe").
+            def _is_installer(a):
+                n = (a.get("name") or "").lower()
+                return n.startswith("golem-setup") and n.endswith(".exe")
+            assets = rel.get("assets", [])
+            installer = next((a for a in assets if _is_installer(a)), None)
             self.result.emit({
                 "ok": True,
                 "tag": tag,
@@ -441,11 +447,17 @@ class Builder(QWidget):
 
     def _update_bar(self) -> QWidget:
         self.update_bar = QFrame()
-        self.update_bar.setStyleSheet("background:#1c2a1c; border:1px solid #2f4a2f; border-radius:8px;")
+        # Scope the background to the frame itself (#id) so it doesn't cascade onto the child buttons -
+        # that cascade was making the buttons dark green with unreadable near-black text.
+        self.update_bar.setObjectName("updateBar")
+        self.update_bar.setStyleSheet(
+            "#updateBar { background:#1f7a3f; border:1px solid #39a35a; border-radius:10px; }")
         lay = QHBoxLayout(self.update_bar)
-        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(8)
         self.update_label = QLabel("")
-        self.update_label.setStyleSheet("color:#8fd08f; font-weight:600;")
+        self.update_label.setStyleSheet("color:#ffffff; font-size:15px; font-weight:700; "
+                                        "background:transparent; border:none;")
         self.update_label.setWordWrap(True)
         lay.addWidget(self.update_label, 1)
         self.update_notes_btn = QPushButton("What's new")
@@ -454,7 +466,15 @@ class Builder(QWidget):
         self.update_now_btn.clicked.connect(self.do_update)
         self.update_skip_btn = QPushButton("Skip")
         self.update_skip_btn.clicked.connect(lambda: self.update_bar.setVisible(False))
+        # The primary action stands out (white on bright green); the others are readable light-on-dark.
+        self.update_now_btn.setStyleSheet(
+            "background:#ffffff; color:#176b35; font-weight:700; font-size:14px; border:none; "
+            "border-radius:8px; padding:9px 20px;")
+        for b in (self.update_notes_btn, self.update_skip_btn):
+            b.setStyleSheet("background:#15592e; color:#ffffff; font-size:14px; border:1px solid #39a35a; "
+                            "border-radius:8px; padding:9px 16px;")
         for b in (self.update_notes_btn, self.update_now_btn, self.update_skip_btn):
+            b.setCursor(Qt.PointingHandCursor)
             lay.addWidget(b)
         self.update_bar.setVisible(False)  # hidden until a newer release is found
         return self.update_bar
