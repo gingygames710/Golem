@@ -73,6 +73,17 @@ FEATURES = [
 # A few known-good models to offer in the 'pull' box. The user can type any Ollama tag.
 SUGGESTED_MODELS = ["gemma4:12b", "hermes3", "qwen2.5:7b", "llama3.2:3b", "llava:13b", "mistral:7b"]
 
+# A few good local Piper voices to offer; the user can type any voice from the Piper library.
+PIPER_VOICES = ["en_US-lessac-medium", "en_US-amy-medium", "en_US-hfc_female-medium",
+                "en_US-ryan-high", "en_GB-alan-medium", "en_GB-northern_english_male-medium"]
+
+
+def gen_python() -> str:
+    """The Python inside the image & sound pack's venv, where Piper lives. '' if the pack isn't installed."""
+    p = AGENT_DIR / "gen" / ".venv" / ("Scripts" if os.name == "nt" else "bin") / \
+        ("python.exe" if os.name == "nt" else "python")
+    return str(p) if p.exists() else ""
+
 PERSONALITY_PRESETS = {
     "Friendly helper": "You are a warm, upbeat helper. Keep replies short and plain. Explain what you're "
                        "about to do in one line before you do it.",
@@ -296,6 +307,51 @@ class UpdateCheckThread(QThread):
             self.result.emit({"ok": False, "error": str(e)})
 
 
+class VoiceTestThread(QThread):
+    """Download a Piper voice if needed, synthesize a short line, and play it - all off the UI thread."""
+    line = Signal(str)
+    done = Signal(bool)
+
+    def __init__(self, voice: str):
+        super().__init__()
+        self.voice = voice
+
+    def run(self):
+        gp = gen_python()
+        if not gp:
+            self.line.emit("Install the image & sound pack above first (it includes the Piper voice).")
+            self.done.emit(False)
+            return
+        gendir = AGENT_DIR / "gen"
+        voices = gendir / "voices"
+        voices.mkdir(parents=True, exist_ok=True)
+        onnx = voices / f"{self.voice}.onnx"
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        try:
+            if not onnx.exists():
+                self.line.emit(f"Downloading voice '{self.voice}' (about 60 MB, once)...")
+                subprocess.run([gp, "-m", "piper.download_voices", self.voice, "--download-dir", str(voices)],
+                               capture_output=True, text=True, timeout=600, cwd=str(gendir), creationflags=flags)
+            if not onnx.exists():
+                self.line.emit("Couldn't download that voice - check the name on the Piper samples page.")
+                self.done.emit(False)
+                return
+            self.line.emit("Playing a test line...")
+            import tempfile
+            wav = Path(tempfile.gettempdir()) / "golem-voicetest.wav"
+            subprocess.run([gp, "-m", "piper", "-m", self.voice, "-f", str(wav), "--data-dir", str(voices)],
+                           input="Hello, this is your Golem voice.", text=True, capture_output=True,
+                           timeout=300, cwd=str(gendir), creationflags=flags)
+            if wav.exists() and os.name == "nt":
+                import winsound
+                winsound.PlaySound(str(wav), winsound.SND_FILENAME)
+            self.line.emit(f"Voice '{self.voice}' is ready. Tick the box and Save to use it.")
+            self.done.emit(True)
+        except Exception as e:  # noqa: BLE001
+            self.line.emit(f"Voice test failed: {e}")
+            self.done.emit(False)
+
+
 class Builder(QWidget):
     def __init__(self):
         super().__init__()
@@ -311,6 +367,7 @@ class Builder(QWidget):
         self.update_dl = None      # downloading the new installer
         self.update_info = None    # the latest release info once checked
         self._easy_pending_launch = False  # Easy Mode: launch the agent once the model finishes pulling
+        self.voice_test_thread = None      # running voice download/test
         self._rec = None  # the latest GPU model recommendation
         self.cfg = self.load_config()
 
@@ -419,6 +476,11 @@ class Builder(QWidget):
             "check_updates": self.update_check_box.isChecked(),
             "ollama_install_dir": self.ollama_install_edit.text().strip() if getattr(self, "ollama_install_edit", None) else "",
             "ollama_models_dir": self.ollama_models_edit.text().strip() if getattr(self, "ollama_models_edit", None) else "",
+            "voice": {
+                "enabled": self.voice_check.isChecked() if getattr(self, "voice_check", None) else False,
+                "voice": (self.voice_combo.currentText().strip() if getattr(self, "voice_combo", None) else "")
+                         or "en_US-lessac-medium",
+            },
             "personality": self.persona_edit.toPlainText().strip(),
         }
 
@@ -977,6 +1039,21 @@ class Builder(QWidget):
         self.launch_agent()
         self.flash("Easy Mode: launched a safe, friendly Golem in its own window.")
 
+    def test_voice(self):
+        if getattr(self, "voice_test_thread", None):
+            return
+        v = self.voice_combo.currentText().strip() or "en_US-lessac-medium"
+        self.voice_test_btn.setEnabled(False)
+        self.voice_log.setText("Setting up the voice...")
+        self.voice_test_thread = VoiceTestThread(v)
+        self.voice_test_thread.line.connect(self.voice_log.setText)
+        self.voice_test_thread.done.connect(self._voice_test_done)
+        self.voice_test_thread.start()
+
+    def _voice_test_done(self, ok: bool):
+        self.voice_test_btn.setEnabled(True)
+        self.voice_test_thread = None
+
     def apply_profile(self, pid: str):
         prof = PROFILES.get(pid, {})
         feats = prof.get("features") or {}
@@ -1208,6 +1285,36 @@ class Builder(QWidget):
         rg.addLayout(rrow)
         lay.addWidget(rea_box)
 
+        voice_box = QGroupBox("Voice - have the agent speak its replies")
+        vg = QVBoxLayout(voice_box)
+        self.voice_check = QCheckBox("Read the agent's replies out loud")
+        vg.addWidget(self.voice_check)
+        vrow = QHBoxLayout()
+        vrow.addWidget(QLabel("Voice:"))
+        self.voice_combo = QComboBox()
+        self.voice_combo.setEditable(True)
+        self.voice_combo.addItems(PIPER_VOICES)
+        vrow.addWidget(self.voice_combo, 1)
+        self.voice_test_btn = QPushButton("Download & test")
+        self.voice_test_btn.clicked.connect(self.test_voice)
+        vrow.addWidget(self.voice_test_btn)
+        vg.addLayout(vrow)
+        self.voice_log = QLabel("")
+        self.voice_log.setStyleSheet("color:#888;")
+        self.voice_log.setWordWrap(True)
+        vg.addWidget(self.voice_log)
+        vbrowse = QPushButton("Browse & hear more voices")
+        vbrowse.clicked.connect(lambda: webbrowser.open("https://rhasspy.github.io/piper-samples/"))
+        vg.addWidget(vbrowse)
+        vnote = QLabel("Uses the free local Piper voices from the image & sound pack (install that above "
+                       "first). Pick a voice and Download & test to hear it; the agent window also has a "
+                       "speaker button to toggle speaking. Only use voices you're allowed to - uploading "
+                       "your own voice sample to clone is a planned add-on.")
+        vnote.setStyleSheet("color:#888;")
+        vnote.setWordWrap(True)
+        vg.addWidget(vnote)
+        lay.addWidget(voice_box)
+
         upd_box = QGroupBox("Updates")
         ug = QVBoxLayout(upd_box)
         ug.addWidget(QLabel(f"You're running Golem {VERSION}."))
@@ -1330,6 +1437,11 @@ class Builder(QWidget):
         self.sticky_check.setChecked(bool(c.get("sticky_taint", False)))
         self.hardened_check.setChecked(bool(c.get("hardened", False)))
         self.update_check_box.setChecked(bool(c.get("check_updates", True)))
+        vc = c.get("voice") or {}
+        if getattr(self, "voice_check", None) is not None:
+            self.voice_check.setChecked(bool(vc.get("enabled", False)))
+        if getattr(self, "voice_combo", None) is not None:
+            self.voice_combo.setCurrentText(vc.get("voice", "en_US-lessac-medium"))
         if getattr(self, "ollama_install_edit", None) is not None:
             self.ollama_install_edit.setText(c.get("ollama_install_dir", "") or "")
         if getattr(self, "ollama_models_edit", None) is not None:

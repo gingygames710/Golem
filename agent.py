@@ -933,8 +933,11 @@ def generate_speech(text: str, path: str, voice: str = "en_US-lessac-medium") ->
     voices = GEN_DIR / "voices"
     voices.mkdir(parents=True, exist_ok=True)
     try:
-        p = subprocess.run([_gen_python(), "-m", "piper", "-m", voice, "-f", str(out),
-                            "--download-dir", str(voices), "--data-dir", str(voices)],
+        # Piper 1.3+ no longer auto-downloads the voice during synth, so fetch it first if missing.
+        if not (voices / f"{voice}.onnx").exists():
+            subprocess.run([_gen_python(), "-m", "piper.download_voices", voice, "--download-dir", str(voices)],
+                           capture_output=True, text=True, timeout=600, cwd=str(GEN_DIR))
+        p = subprocess.run([_gen_python(), "-m", "piper", "-m", voice, "-f", str(out), "--data-dir", str(voices)],
                            input=text, capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=600, cwd=str(GEN_DIR))
     except subprocess.TimeoutExpired:
@@ -1311,6 +1314,7 @@ def default_config() -> dict:
         "check_updates": True,
         "ollama_install_dir": "",   # optional: pass to the Ollama installer's /DIR (keep it off C:)
         "ollama_models_dir": "",    # optional: sets OLLAMA_MODELS so model files live off C:
+        "voice": {"enabled": False, "voice": "en_US-lessac-medium"},  # agent window reads replies aloud (Piper)
         "personality": "",
     }
 

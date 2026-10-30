@@ -180,6 +180,82 @@ class Reader(QThread):
         self.ended.emit()
 
 
+# ---------------------------------------------------------------- voice (0.9.0)
+#
+# The agent can read its replies aloud with the same local Piper TTS the agent already uses
+# (generate_speech), run from the gen/ environment. Pretrained voices only for now - the user picks a
+# voice (and Piper downloads it on first use); clone-from-your-own-sample is a planned heavier add-on.
+GEN_DIR = AGENT_DIR / "gen"
+VOICES_DIR = GEN_DIR / "voices"
+DEFAULT_VOICE = "en_US-lessac-medium"
+
+
+def gen_python() -> str:
+    p = GEN_DIR / ".venv" / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
+    return str(p) if p.exists() else ""
+
+
+def piper_available() -> bool:
+    return bool(gen_python())
+
+
+def ensure_voice(voice: str) -> bool:
+    """Make sure the Piper voice model is downloaded (Piper 1.3+ no longer fetches it during synth).
+    Returns True when the voice is present and usable."""
+    gp = gen_python()
+    if not gp:
+        return False
+    if (VOICES_DIR / f"{voice}.onnx").exists():
+        return True
+    try:
+        VOICES_DIR.mkdir(parents=True, exist_ok=True)
+        subprocess.run([gp, "-m", "piper.download_voices", voice, "--download-dir", str(VOICES_DIR)],
+                       capture_output=True, text=True, timeout=600, cwd=str(GEN_DIR),
+                       creationflags=CREATE_NO_WINDOW)
+    except Exception:
+        pass
+    return (VOICES_DIR / f"{voice}.onnx").exists()
+
+
+_MD = re.compile(r"[`*#_>~\[\]]|\(https?://[^)]+\)")
+
+
+def _clean_for_speech(text: str) -> str:
+    t = re.sub(r"```.*?```", " (code) ", text, flags=re.S)   # don't read code blocks aloud
+    t = _MD.sub("", t)
+    return t.strip()[:700]
+
+
+class VoicePlayer(QThread):
+    """Synthesize text with Piper and play it, off the UI thread so the window never freezes."""
+    done = Signal()
+
+    def __init__(self, text: str, voice: str):
+        super().__init__()
+        self.text, self.voice = text, voice
+
+    def run(self):
+        try:
+            gp = gen_python()
+            if not gp or not self.text.strip():
+                return
+            ensure_voice(self.voice)   # download the voice model the first time it's used
+            if not (VOICES_DIR / f"{self.voice}.onnx").exists():
+                return
+            wav = Path(tempfile.gettempdir()) / f"golem-say-{int(time.time() * 1000)}.wav"
+            subprocess.run([gp, "-m", "piper", "-m", self.voice, "-f", str(wav), "--data-dir", str(VOICES_DIR)],
+                           input=self.text, text=True, capture_output=True, encoding="utf-8",
+                           errors="replace", timeout=300, cwd=str(GEN_DIR),
+                           creationflags=CREATE_NO_WINDOW)
+            if wav.exists() and wav.stat().st_size > 100 and os.name == "nt":
+                import winsound
+                winsound.PlaySound(str(wav), winsound.SND_FILENAME)
+        except Exception:
+            pass
+        finally:
+            self.done.emit()
+
+
 class AgentWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -194,6 +270,16 @@ class AgentWindow(QWidget):
         self._bg_path = ""
         self._refresh_bg_pixmap()
         self.setStyleSheet(self._window_qss())
+
+        vc = _config().get("voice") or {}
+        self.speak_on = bool(vc.get("enabled"))
+        self.voice_name = vc.get("voice") or DEFAULT_VOICE
+        self._voice_thread = None
+        self._spoken_text = ""        # last text spoken aloud, so a reply isn't read twice
+        self._warned_no_piper = False
+        self._speak_timer = QTimer(self)
+        self._speak_timer.setSingleShot(True)
+        self._speak_timer.timeout.connect(self._speak_current)
 
         self.proc = None
         self.reader = None
@@ -300,6 +386,42 @@ class AgentWindow(QWidget):
     def open_appearance(self):
         AppearanceDialog(self).exec()
 
+    # ---------------------------------------------------------------- voice (0.9.0)
+
+    def _toggle_speak(self, on: bool):
+        self.speak_on = on
+        if on and not piper_available() and not self._warned_no_piper:
+            self._warned_no_piper = True
+            self._bubble("To hear replies, install the image & sound pack in the Builder (Add-ons tab) - "
+                         "it includes the Piper voice.", "system")
+        self._save_voice_cfg()
+
+    def _save_voice_cfg(self):
+        try:
+            cfg = _config()
+            cfg["voice"] = {"enabled": self.speak_on, "voice": self.voice_name}
+            CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _speak_current(self):
+        """Fired a moment after the agent stops producing output: read the finished reply aloud once."""
+        if not self.speak_on or not piper_available():
+            return
+        text = _clean_for_speech(self.agent_text or "")
+        if not text or text == self._spoken_text:
+            return
+        if self._voice_thread and self._voice_thread.isRunning():
+            self._speak_timer.start(800)   # busy speaking the previous reply; try again shortly
+            return
+        self._spoken_text = text
+        self._voice_thread = VoicePlayer(text, self.voice_name)
+        self._voice_thread.start()
+
+    def _maybe_queue_speak(self):
+        if self.speak_on:
+            self._speak_timer.start(1100)   # debounce: speak once output settles for ~1.1s
+
     # ---------------------------------------------------------------- building blocks
 
     def _header(self) -> QWidget:
@@ -345,6 +467,17 @@ class AgentWindow(QWidget):
             h.addSpacing(10)
             h.addWidget(badge)
         h.addStretch(1)
+        self.speak_btn = QPushButton("🔊")
+        self.speak_btn.setCheckable(True)
+        self.speak_btn.setChecked(self.speak_on)
+        self.speak_btn.setCursor(Qt.PointingHandCursor)
+        self.speak_btn.setToolTip("Read the agent's replies out loud")
+        self.speak_btn.setStyleSheet(
+            "QPushButton { background:transparent; border:1px solid #2a2f3a; border-radius:8px; "
+            "padding:6px 11px; font-size:15px; }"
+            " QPushButton:checked { background:#1f6feb33; border-color:#1f6feb; }")
+        self.speak_btn.toggled.connect(self._toggle_speak)
+        h.addWidget(self.speak_btn)
         self.appear_btn = QPushButton("🎨")
         self.appear_btn.setCursor(Qt.PointingHandCursor)
         self.appear_btn.setToolTip("Appearance - colors, font, and background image")
@@ -573,14 +706,18 @@ class AgentWindow(QWidget):
         if self.cur_agent is None:
             self.cur_agent = self._bubble("", "agent")
             self.agent_text = ""
+            self._spoken_text = ""        # a fresh reply may be read aloud
         self.agent_text += (("\n" if self.agent_text else "") + line)
         self.cur_agent.setText(self.agent_text)
+        self._maybe_queue_speak()
 
     def _preview_agent(self, tail: str):
         if self.cur_agent is None:
             self.cur_agent = self._bubble("", "agent")
             self.agent_text = ""
+            self._spoken_text = ""
         self.cur_agent.setText(self.agent_text + (("\n" if self.agent_text else "") + tail))
+        self._maybe_queue_speak()
 
     # ---------------------------------------------------------------- input
 

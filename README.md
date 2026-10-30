@@ -27,6 +27,7 @@ actually runs.
 - [Choosing a model](#choosing-a-model)
 - [Personality](#personality)
 - [Appearance](#appearance)
+- [Voice](#voice)
 - [Limiting it to folders](#limiting-it-to-folders)
 - [Hardened Mode (for cautious users)](#hardened-mode-for-cautious-users)
 - [Sandbox Mode (a real wall)](#sandbox-mode-a-real-wall)
@@ -211,6 +212,19 @@ Make the agent window feel like yours. Click the **🎨** button in the agent wi
 
 Every change previews live. **Save** keeps it (stored in the config under `appearance`); **Reset to
 default** puts it back. It's purely look-and-feel — nothing about what the agent does changes.
+
+## Voice
+
+Golem can **read its replies out loud** using the same free local Piper voices as the image & sound pack
+(install that first, on the Builder's Add-ons tab). Then:
+
+- In the agent window, click the **🔊** button in the header to toggle speaking on or off.
+- On the Builder's **Add-ons → Voice** section, pick a voice and click **Download & test** to hear it
+  (the voice downloads once, ~60 MB). Browse and preview more at the
+  [Piper samples page](https://rhasspy.github.io/piper-samples/) and type any voice name.
+
+It all runs locally — nothing is sent anywhere. Only use voices you're allowed to; **cloning a voice from
+your own recording is a planned add-on.**
 
 ## Limiting it to folders
 
