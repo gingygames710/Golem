@@ -3,7 +3,7 @@
 ; Compile with:  ISCC.exe golem.iss   ->  installer\Golem-setup-<version>.exe
 
 #define MyAppName "Golem"
-#define MyAppVersion "0.9.0"
+#define MyAppVersion "0.9.1"
 #define MyAppPublisher "Golem"
 #define BuilderExe "Golem-Builder.exe"
 #define AgentExe "Golem.exe"

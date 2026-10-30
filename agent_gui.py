@@ -199,9 +199,20 @@ def piper_available() -> bool:
     return bool(gen_python())
 
 
+_VOICE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _safe_voice(voice: str) -> str:
+    """Voice names are used in a path and passed to Piper; keep them to a safe charset so a crafted
+    name can't escape the voices folder. Fall back to the default if it looks wrong."""
+    v = (voice or "").strip()
+    return v if _VOICE_RE.match(v) else DEFAULT_VOICE
+
+
 def ensure_voice(voice: str) -> bool:
     """Make sure the Piper voice model is downloaded (Piper 1.3+ no longer fetches it during synth).
     Returns True when the voice is present and usable."""
+    voice = _safe_voice(voice)
     gp = gen_python()
     if not gp:
         return False
@@ -222,8 +233,12 @@ _MD = re.compile(r"[`*#_>~\[\]]|\(https?://[^)]+\)")
 
 def _clean_for_speech(text: str) -> str:
     t = re.sub(r"```.*?```", " (code) ", text, flags=re.S)   # don't read code blocks aloud
-    t = _MD.sub("", t)
-    return t.strip()[:700]
+    t = _MD.sub("", t).strip()
+    if len(t) > 700:                                         # trim long replies at a natural boundary
+        cut = t[:700]
+        end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "), cut.rfind("\n"))
+        t = cut[:end + 1] if end > 400 else cut.rsplit(" ", 1)[0]
+    return t
 
 
 class VoicePlayer(QThread):
@@ -232,9 +247,10 @@ class VoicePlayer(QThread):
 
     def __init__(self, text: str, voice: str):
         super().__init__()
-        self.text, self.voice = text, voice
+        self.text, self.voice = text, _safe_voice(voice)
 
     def run(self):
+        wav = None
         try:
             gp = gen_python()
             if not gp or not self.text.strip():
@@ -253,6 +269,11 @@ class VoicePlayer(QThread):
         except Exception:
             pass
         finally:
+            if wav is not None:
+                try:
+                    wav.unlink(missing_ok=True)   # don't leave temp WAVs piling up
+                except Exception:
+                    pass
             self.done.emit()
 
 
@@ -857,6 +878,17 @@ class AgentWindow(QWidget):
             self._bubble("Could not reach the agent - click Restart.", "system")
 
     def closeEvent(self, event):
+        try:
+            if os.name == "nt":
+                import winsound
+                winsound.PlaySound(None, winsound.SND_PURGE)   # stop any in-progress speech
+        except Exception:
+            pass
+        if getattr(self, "_voice_thread", None) is not None:
+            try:
+                self._voice_thread.wait(1500)   # let the voice thread finish before we tear down
+            except Exception:
+                pass
         self._terminate()
         event.accept()
 

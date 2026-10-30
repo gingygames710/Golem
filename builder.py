@@ -314,7 +314,8 @@ class VoiceTestThread(QThread):
 
     def __init__(self, voice: str):
         super().__init__()
-        self.voice = voice
+        v = (voice or "").strip()
+        self.voice = v if re.match(r"^[A-Za-z0-9_-]+$", v) else "en_US-lessac-medium"
 
     def run(self):
         gp = gen_python()
