@@ -22,6 +22,7 @@ actually runs.
 - [Choosing a model](#choosing-a-model)
 - [Personality](#personality)
 - [Limiting it to folders](#limiting-it-to-folders)
+- [Hardened Mode (for cautious users)](#hardened-mode-for-cautious-users)
 - [Using it from your phone](#using-it-from-your-phone)
 - [Phone notifications](#phone-notifications)
 - [Running on a schedule](#running-on-a-schedule)
@@ -185,6 +186,24 @@ only **create, edit, move or delete** inside those folders — in every mode, in
 *read* files elsewhere. Leave the list empty to let it work anywhere (in normal chat it still asks before each
 change). Remember this is a speed bump, not a hard sandbox (see Safety).
 
+## Hardened Mode (for cautious users)
+
+If running an AI agent on your PC makes you nervous, tick **Hardened Mode** on the Folders tab (or pass
+`--hardened` on the command line). It's **off by default** and turns on every safety layer at once, so you don't
+have to find them one by one:
+
+- The agent can only **read *and* change** files inside your allowed folders — not just write to them. (Set some
+  folders first, or there's nothing to confine it to.)
+- It stays **extra-careful for the whole session** once it has read anything from the web or another program: it
+  re-asks before each change even if you'd said "always allow", because that outside content could be trying to
+  steer it (prompt injection).
+- **Phone access binds to this PC only** (loopback). If you still want your phone to reach it, pass your Tailscale
+  address, e.g. `--host 100.x.y.z`.
+
+Leave it off to run wide-open — nothing changes, and normal chat still asks before every change. Hardened Mode is
+still a strong set of guardrails, not an OS-level sandbox (see Safety); true isolation is planned for a later
+version.
+
 ## Using it from your phone
 
 Turn on phone access in the Builder (or run `agent.py --config agent_config.json --serve`). It runs as a small web
@@ -290,6 +309,8 @@ The Builder reads and writes `agent_config.json` next to the agent. You can also
   },
   "serve": { "enabled": false, "host": "0.0.0.0", "port": 8765, "token": "" },
   "folders": [],                 // if non-empty, writes/edits/deletes stay inside these
+  "sticky_taint": false,         // stay extra-careful all session after reading untrusted content
+  "hardened": false,             // Hardened Mode: confine reads too + sticky taint + loopback-only serve
   "personality": ""              // written to personality.txt on launch
 }
 ```

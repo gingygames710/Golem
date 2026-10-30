@@ -228,6 +228,14 @@ def _check_writable(p: Path):
         raise PermissionError(f"{p} is outside the folders the agent may change ({allowed})")
 
 
+def _check_readable(p: Path):
+    """In Hardened Mode with allowed folders set, reading is confined to them too (not just writing)."""
+    if HARDENED and ALLOWED_DIRS and not any(_is_within(p, d) for d in ALLOWED_DIRS):
+        allowed = ", ".join(str(d) for d in ALLOWED_DIRS)
+        raise PermissionError(f"{p} is outside the folders the agent may read ({allowed}); "
+                              f"Hardened Mode is on")
+
+
 def _snapshot(p: Path):
     """Save a copy of an existing file before it is overwritten or edited, so the change can be undone.
     Best effort - a backup problem never blocks the actual operation. Undo copies live in BACKUP_DIR."""
@@ -241,6 +249,11 @@ def _snapshot(p: Path):
 
 
 STICKY_TAINT = False  # config "sticky_taint": once untrusted content is read, keep re-confirming all session
+HARDENED = False  # config "hardened" / --hardened: a locked-down bundle for cautious users. Default OFF.
+# When on: reads are confined to the allowed folders (not just writes), sticky taint is forced on, and
+# phone serving refuses to bind to all interfaces (0.0.0.0) - falling back to loopback. Additive: with it
+# off, nothing changes and power users keep the wide-open behaviour. The sensitive-path denylist and the
+# per-IP rate limit below are always on regardless; Hardened Mode layers the stricter confinement on top.
 
 # Paths that look like secrets/credentials - the agent refuses to read OR change them, even inside allowed folders.
 SENSITIVE_PATH = re.compile(
@@ -428,6 +441,7 @@ def read_file(path: str, offset: int = 1, limit: int = 2000) -> str:
     offset = max(offset, 1)
     p = _resolve(path)
     _check_sensitive(p, "read")
+    _check_readable(p)
     lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
     chunk = lines[offset - 1: offset - 1 + limit]
     numbered = "\n".join(f"{i:>6}\t{line}" for i, line in enumerate(chunk, start=offset))
@@ -461,6 +475,7 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
 
 def find_files(pattern: str, path: str = ".") -> str:
     root = _resolve(path)
+    _check_readable(root)
     hits = set()
     for pat in re.split(r"[;,]\s*", pattern):  # small models like "*.md;*.txt"
         if pat:
@@ -471,6 +486,7 @@ def find_files(pattern: str, path: str = ".") -> str:
 def grep(pattern: str, path: str = ".", glob: str = "*") -> str:
     regex = re.compile(pattern)
     root = _resolve(path)
+    _check_readable(root)
     files = [root] if root.is_file() else (p for p in root.rglob("*") if p.is_file())
     results = []
     for f in files:
@@ -893,6 +909,7 @@ def default_config() -> dict:
         "serve": {"enabled": False, "host": "0.0.0.0", "port": 8765, "token": ""},
         "folders": [],
         "sticky_taint": False,
+        "hardened": False,
         "personality": "",
     }
 
@@ -908,9 +925,11 @@ def enabled_tools_from(features: dict) -> set:
 
 def apply_config(args, cfg: dict) -> set:
     """Fill an argparse Namespace from a Builder config, and return the enabled tool names."""
-    global ALLOWED_DIRS, STICKY_TAINT
+    global ALLOWED_DIRS, STICKY_TAINT, HARDENED
     ALLOWED_DIRS = [Path(f).expanduser().resolve() for f in cfg.get("folders", []) if str(f).strip()]
-    STICKY_TAINT = bool(cfg.get("sticky_taint", False))
+    HARDENED = bool(cfg.get("hardened", False))
+    # Hardened Mode bundles sticky taint in with the rest, so turning it on is one switch, not four.
+    STICKY_TAINT = bool(cfg.get("sticky_taint", False)) or HARDENED
     model = cfg.get("model", {})
     mode = model.get("mode", "auto")
     if mode == "auto":
@@ -1181,8 +1200,13 @@ class Agent:
         self.system_prompt = build_system_prompt(overnight)
         if ALLOWED_DIRS:
             dirs = "\n".join(f"  - {d}" for d in ALLOWED_DIRS)
-            self.system_prompt += ("\n\nYou may only create, edit, move or delete files inside these folders:\n"
-                                   + dirs + "\nReading files elsewhere is fine; put anything you create in one of these.")
+            if HARDENED:
+                self.system_prompt += ("\n\nHardened Mode is on. You may only read, create, edit, move or delete "
+                                       "files inside these folders:\n" + dirs + "\nFiles outside them are off-limits "
+                                       "for both reading and writing; work only within these.")
+            else:
+                self.system_prompt += ("\n\nYou may only create, edit, move or delete files inside these folders:\n"
+                                       + dirs + "\nReading files elsewhere is fine; put anything you create in one of these.")
         if mcp and mcp.sessions:
             self.system_prompt += f"""
 
@@ -1649,6 +1673,11 @@ def run_server(agent, host: str, port: int, token: str):
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+    if HARDENED and host in ("0.0.0.0", ""):
+        print("\033[33m[hardened] not binding to all interfaces; using loopback 127.0.0.1 instead.\n"
+              "  For phone access in Hardened Mode, pass --host <your 100.x Tailscale address>.\033[0m")
+        host = "127.0.0.1"
+
     lock = threading.Lock()  # one task at a time: the agent keeps a single conversation
     guard = {"bad": 0, "until": 0.0}  # lock out token-guessing after repeated bad tokens
     hits = {}  # per-IP request timestamps, for rate limiting
@@ -1752,7 +1781,7 @@ def run_server(agent, host: str, port: int, token: str):
 
 
 def main():
-    global MAX_OUTPUT_CHARS, WORKSPACE
+    global MAX_OUTPUT_CHARS, WORKSPACE, HARDENED, STICKY_TAINT
     parser = argparse.ArgumentParser(description="A Claude Code-style agent for your PC.")
     parser.add_argument("prompt", nargs="*", help="Run one task and exit instead of starting a chat")
     parser.add_argument("--computer", action="store_true", help="Enable screenshot/mouse/keyboard tools")
@@ -1780,6 +1809,8 @@ def main():
     parser.add_argument("--vision-model", default="", help="Vision model used by --local auto")
     parser.add_argument("--config", metavar="PATH",
                         help="Load an agent built with the Builder GUI (e.g. agent_config.json)")
+    parser.add_argument("--hardened", action="store_true",
+                        help="Locked-down mode: reads confined to allowed folders, sticky taint, loopback-only serve")
     parser.add_argument("--chat", action="store_true",
                         help="Force interactive chat even if the config turns on phone serving")
     args = parser.parse_args()
@@ -1789,6 +1820,9 @@ def main():
     enabled_tools = None
     if args.config:
         enabled_tools = apply_config(args, json.loads(Path(args.config).read_text(encoding="utf-8")))
+    if args.hardened:  # the command line can force Hardened Mode on even if the config left it off
+        HARDENED = True
+        STICKY_TAINT = True
     if args.chat:  # the desktop chat window forces interactive mode even if the config enables serving
         args.serve = False
 

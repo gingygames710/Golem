@@ -328,6 +328,7 @@ class Builder(QWidget):
             },
             "folders": [self.folders_list.item(i).text() for i in range(self.folders_list.count())],
             "sticky_taint": self.sticky_check.isChecked(),
+            "hardened": self.hardened_check.isChecked(),
             "personality": self.persona_edit.toPlainText().strip(),
         }
 
@@ -680,6 +681,19 @@ class Builder(QWidget):
         self.sticky_check = QCheckBox("Extra-careful mode: sticky re-confirm after the agent reads untrusted content")
         self.sticky_check.setStyleSheet("color:#aab;")
         lay.addWidget(self.sticky_check)
+
+        self.hardened_check = QCheckBox("Hardened Mode: lock the agent down (recommended if you're cautious)")
+        self.hardened_check.setStyleSheet("color:#8fd08f; font-weight:bold;")
+        lay.addWidget(self.hardened_check)
+        hnote = QLabel("One switch that turns on every safety layer at once: the agent can only read AND change "
+                       "files inside the allowed folders above, it stays extra-careful for the whole session after "
+                       "reading anything from the web or another app, and phone access binds to this PC only (give "
+                       "it your Tailscale address if you still want your phone to reach it). Leave it off to run "
+                       "wide-open - everything still asks before each change in normal mode.")
+        hnote.setStyleSheet("color:#888;")
+        hnote.setWordWrap(True)
+        lay.addWidget(hnote)
+        self.hardened_check.toggled.connect(lambda on: on and self.sticky_check.setChecked(True))
         return w
 
     def add_folder(self):
@@ -814,6 +828,7 @@ class Builder(QWidget):
         self.folders_list.clear()
         self.folders_list.addItems([str(f) for f in c.get("folders", [])])
         self.sticky_check.setChecked(bool(c.get("sticky_taint", False)))
+        self.hardened_check.setChecked(bool(c.get("hardened", False)))
         s = c.get("serve", {})
         self.serve_check.setChecked(bool(s.get("enabled", False)))
         self.port_spin.setValue(int(s.get("port", 8765)))
