@@ -327,6 +327,7 @@ class Builder(QWidget):
                 "token": self.token_edit.text().strip(),
             },
             "folders": [self.folders_list.item(i).text() for i in range(self.folders_list.count())],
+            "sticky_taint": self.sticky_check.isChecked(),
             "personality": self.persona_edit.toPlainText().strip(),
         }
 
@@ -634,7 +635,7 @@ class Builder(QWidget):
         self.port_spin.setValue(8765)
         self.token_edit = QLineEdit()
         gen = QPushButton("Generate")
-        gen.clicked.connect(lambda: self.token_edit.setText(secrets.token_urlsafe(12)))
+        gen.clicked.connect(lambda: self.token_edit.setText(secrets.token_urlsafe(32)))
         token_row = QHBoxLayout()
         token_row.addWidget(self.token_edit, 1)
         token_row.addWidget(gen)
@@ -676,6 +677,9 @@ class Builder(QWidget):
         note.setStyleSheet("color:#888;")
         note.setWordWrap(True)
         lay.addWidget(note)
+        self.sticky_check = QCheckBox("Extra-careful mode: sticky re-confirm after the agent reads untrusted content")
+        self.sticky_check.setStyleSheet("color:#aab;")
+        lay.addWidget(self.sticky_check)
         return w
 
     def add_folder(self):
@@ -809,6 +813,7 @@ class Builder(QWidget):
         self.persona_edit.setPlainText(c.get("personality", ""))
         self.folders_list.clear()
         self.folders_list.addItems([str(f) for f in c.get("folders", [])])
+        self.sticky_check.setChecked(bool(c.get("sticky_taint", False)))
         s = c.get("serve", {})
         self.serve_check.setChecked(bool(s.get("enabled", False)))
         self.port_spin.setValue(int(s.get("port", 8765)))
@@ -848,7 +853,7 @@ class Builder(QWidget):
         if not self.serve_check.isChecked():
             self.serve_check.setChecked(True)
         if not self.token_edit.text().strip():
-            self.token_edit.setText(secrets.token_urlsafe(12))
+            self.token_edit.setText(secrets.token_urlsafe(32))
         self._launch("Launched the phone server in a new window - open the printed address on your phone.")
 
 
