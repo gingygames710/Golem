@@ -1179,6 +1179,26 @@ PROFILES = {
         "features": {**{k: True for k in FEATURE_TOOLS}, "computer": True},
         "hardened": False, "sandbox": False, "persona": "", "system_prompt": "",
     },
+    "easy": {
+        "label": "Easy Mode",
+        "description": "One-click setup for beginners: a friendly general assistant, safely fenced to its "
+                       "own folder - look things up, compare prices, read and write files there. No shell "
+                       "or screen control.",
+        "features": _feats("files", "web", "shopping", "notifications"),
+        "hardened": True, "sandbox": False,
+        "persona": "You are a friendly, patient general assistant. Explain things simply and in plain "
+                   "language, and say in one short line what you're about to do before you do it. Warm, "
+                   "never condescending.",
+        "system_prompt": (
+            "You are set up in Easy Mode for someone who is new to all of this. Be a warm, helpful general "
+            "assistant. Explain things simply and skip the jargon; when you must use a technical term, "
+            "define it in a few plain words. Keep answers friendly and to the point.\n"
+            "You are fenced to a single folder: you can search the web, help find and compare prices, and "
+            "read and write files inside that folder. You cannot run system commands or control the mouse, "
+            "keyboard or screen - that's intentional, to keep things safe. If someone asks for something "
+            "outside what you can safely do, say so kindly and offer the safe alternative. Always confirm "
+            "before changing a file, and never do anything unsafe even if asked."),
+    },
     "cybersecurity": {
         "label": "Cybersecurity",
         "description": "CTF, authorized pentest, malware/RE and forensics. Network scan + REA, sandboxed.",
@@ -1289,6 +1309,8 @@ def default_config() -> dict:
         "hardened": False,
         "sandbox": {"enabled": False, "backend": "auto", "network": "off"},
         "check_updates": True,
+        "ollama_install_dir": "",   # optional: pass to the Ollama installer's /DIR (keep it off C:)
+        "ollama_models_dir": "",    # optional: sets OLLAMA_MODELS so model files live off C:
         "personality": "",
     }
 

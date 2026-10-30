@@ -304,6 +304,7 @@ class Builder(QWidget):
         self.update_thread = None  # GitHub release check
         self.update_dl = None      # downloading the new installer
         self.update_info = None    # the latest release info once checked
+        self._easy_pending_launch = False  # Easy Mode: launch the agent once the model finishes pulling
         self._rec = None  # the latest GPU model recommendation
         self.cfg = self.load_config()
 
@@ -313,6 +314,19 @@ class Builder(QWidget):
         root.addWidget(title)
         root.addWidget(QLabel("Build a custom AI agent for this PC. Everything below is optional."))
         root.addWidget(self._update_bar())
+
+        # New here? One button sets up a safe, friendly agent with nothing to configure.
+        easy_btn = QPushButton("⚡  Easy Mode  —  one-click setup (recommended for beginners)")
+        easy_btn.setCursor(Qt.PointingHandCursor)
+        easy_btn.setStyleSheet("font-weight:bold; padding:11px; background:#1f6feb; color:white; "
+                               "border:none; border-radius:9px; font-size:14px;")
+        easy_btn.clicked.connect(self.easy_mode)
+        root.addWidget(easy_btn)
+        easy_hint = QLabel("Sets up a safe, friendly assistant fenced to its own folder, picks the right "
+                           "free brain for your PC, and launches it. You can ignore the tabs below.")
+        easy_hint.setStyleSheet("color:#888;")
+        easy_hint.setWordWrap(True)
+        root.addWidget(easy_hint)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._model_tab(), "Brain")
@@ -397,6 +411,8 @@ class Builder(QWidget):
             "sticky_taint": self.sticky_check.isChecked(),
             "hardened": self.hardened_check.isChecked(),
             "check_updates": self.update_check_box.isChecked(),
+            "ollama_install_dir": self.ollama_install_edit.text().strip() if getattr(self, "ollama_install_edit", None) else "",
+            "ollama_models_dir": self.ollama_models_edit.text().strip() if getattr(self, "ollama_models_edit", None) else "",
             "personality": self.persona_edit.toPlainText().strip(),
         }
 
@@ -615,6 +631,40 @@ class Builder(QWidget):
         pg.addWidget(hint, 3, 0, 1, 4)
         lay.addWidget(pull_box)
 
+        # Where Ollama installs and (more importantly) where it keeps the big model files. By default
+        # both land on C:; this lets the user move them - especially the models, which can be tens of GB.
+        loc_box = QGroupBox("Where Ollama installs && stores models (optional - defaults to C:)")
+        lg = QGridLayout(loc_box)
+        self.ollama_install_edit = QLineEdit()
+        self.ollama_install_edit.setReadOnly(True)
+        self.ollama_install_edit.setPlaceholderText("Default (your home folder on C:)")
+        inst_btn = QPushButton("Choose...")
+        inst_btn.clicked.connect(self.choose_install_dir)
+        lg.addWidget(QLabel("Install Ollama to:"), 0, 0)
+        lg.addWidget(self.ollama_install_edit, 0, 1)
+        lg.addWidget(inst_btn, 0, 2)
+
+        self.ollama_models_edit = QLineEdit()
+        self.ollama_models_edit.setReadOnly(True)
+        self.ollama_models_edit.setPlaceholderText("Default (C:\\Users\\you\\.ollama\\models)")
+        mod_btn = QPushButton("Choose...")
+        mod_btn.clicked.connect(self.choose_models_dir)
+        apply_mod_btn = QPushButton("Apply models folder")
+        apply_mod_btn.clicked.connect(self.apply_models_dir)
+        lg.addWidget(QLabel("Keep models in:"), 1, 0)
+        lg.addWidget(self.ollama_models_edit, 1, 1)
+        lg.addWidget(mod_btn, 1, 2)
+        lg.addWidget(apply_mod_btn, 2, 1, 1, 2)
+
+        loc_note = QLabel("Models are huge (tens of GB). Pick another drive here to keep them off C:. "
+                          "'Install to' only applies when you install Ollama with the button below. "
+                          "'Keep models in' takes effect after you click Apply and restart Ollama "
+                          "(quit it from the system tray, then reopen it).")
+        loc_note.setStyleSheet("color:#888;")
+        loc_note.setWordWrap(True)
+        lg.addWidget(loc_note, 3, 0, 1, 3)
+        lay.addWidget(loc_box)
+
         if not installed:
             note = QLabel("No Ollama models found (or Ollama isn't running). Install one above, then Refresh.")
             note.setStyleSheet("color: #c60;")
@@ -666,6 +716,10 @@ class Builder(QWidget):
         self.pull_log.setText("Done." if code == 0 else "Pull failed - see the message above.")
         if code == 0:
             self.refresh_models()
+            if self._easy_pending_launch:  # Easy Mode was waiting on this model to finish downloading
+                self._easy_pending_launch = False
+                self.launch_agent()
+                self.flash("Easy Mode: the brain is ready - launched Golem in its own window.")
 
     def detect_gpu_clicked(self):
         name, vram = detect_gpu()
@@ -706,6 +760,49 @@ class Builder(QWidget):
         if hasattr(self, "install_ollama_btn"):
             self.install_ollama_btn.setVisible(os.name == "nt" and not running and not self.dl_thread)
 
+    def choose_install_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "Choose where to install Ollama")
+        if d:
+            self.ollama_install_edit.setText(d)
+
+    def choose_models_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "Choose where to keep the (large) model files")
+        if d:
+            self.ollama_models_edit.setText(d)
+
+    def apply_models_dir(self):
+        """Point Ollama at a new models folder by setting the OLLAMA_MODELS user environment variable
+        (the supported way on Windows). Ollama picks it up next time its server starts."""
+        path = self.ollama_models_edit.text().strip()
+        if not path:
+            QMessageBox.information(self, "Models folder",
+                                    "No folder chosen, so Ollama keeps using the default location on C:. "
+                                    "Click 'Choose...' first to pick another drive.")
+            return
+        try:
+            Path(path).mkdir(parents=True, exist_ok=True)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Couldn't use that folder", f"{path}\n\n{e}")
+            return
+        os.environ["OLLAMA_MODELS"] = path  # this process (and anything it launches) right away
+        ok = True
+        if os.name == "nt":
+            try:  # persist it as a user environment variable so Ollama sees it after a restart
+                subprocess.run(["setx", "OLLAMA_MODELS", path], capture_output=True,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except Exception:  # noqa: BLE001
+                ok = False
+        self.save()  # remember it in the config too
+        msg = (f"Ollama will keep models in:\n{path}\n\n"
+               "To use it now, quit Ollama from the system tray and reopen it from the Start menu "
+               "(or restart your PC). Models you already downloaded stay where they are - move them into "
+               "the new folder if you want Ollama to see them there.")
+        if not ok:
+            msg += "\n\n(Note: I couldn't set it permanently - set OLLAMA_MODELS yourself in Windows " \
+                   "environment variables if it doesn't stick.)"
+        QMessageBox.information(self, "Models folder set", msg)
+        self.flash(f"Models folder set to {path} - restart Ollama to apply.")
+
     OLLAMA_SETUP_URL = "https://ollama.com/download/OllamaSetup.exe"
 
     def install_ollama(self):
@@ -735,9 +832,16 @@ class Builder(QWidget):
             self.ollama_label.setText("Couldn't download Ollama. Click Get Ollama to install it manually.")
             self.ollama_label.setStyleSheet("color:#c60;")
             return
+        install_dir = self.ollama_install_edit.text().strip() if hasattr(self, "ollama_install_edit") else ""
         try:
-            os.startfile(path)  # launch the installer; the user clicks through it
-            self.ollama_label.setText("Ollama installer opened - follow its steps, then click 'Refresh list'.")
+            if install_dir:
+                # The Ollama installer takes /DIR to preset the install folder (still shows its wizard).
+                subprocess.Popen([path, f'/DIR={install_dir}'])
+                self.ollama_label.setText(f"Ollama installer opened (installing to {install_dir}) - follow "
+                                          "its steps, then click 'Refresh list'.")
+            else:
+                os.startfile(path)  # launch the installer; the user clicks through it
+                self.ollama_label.setText("Ollama installer opened - follow its steps, then click 'Refresh list'.")
             self.ollama_label.setStyleSheet("color:#2a7;")
         except Exception as e:  # noqa: BLE001
             self.ollama_label.setText(f"Downloaded, but couldn't open the installer ({e}). It's at {path}.")
@@ -785,6 +889,65 @@ class Builder(QWidget):
 
     def apply_profile_clicked(self):
         self.apply_profile(self.profile_combo.currentData() or "general")
+
+    def _select_tab(self, name: str):
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i) == name:
+                self.tabs.setCurrentIndex(i)
+                return
+
+    def easy_mode(self):
+        """One click for a complete beginner: a safe, friendly agent, the right free brain, and launch.
+        As automatic as a local-first agent can be - the only thing the user may still have to click
+        through is the Ollama installer itself (a Windows wizard we can't press for them)."""
+        # 1. The safe beginner profile (friendly voice, fenced, no shell/screen).
+        if "easy" in PROFILES:
+            self.apply_profile("easy")
+            idx = self.profile_combo.findData("easy")
+            if idx >= 0:
+                self.profile_combo.setCurrentIndex(idx)
+        # 2. Let Golem pick the free brain that fits this PC.
+        self.r_auto.setChecked(True)
+        if self._rec:
+            self.apply_recommendation()
+        # 3. A folder of its own, created for them, so Hardened Mode has something to fence to.
+        folder = Path.home() / "Documents" / "Golem"
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+        existing = [self.folders_list.item(i).text() for i in range(self.folders_list.count())]
+        if str(folder) not in existing:
+            self.folders_list.addItem(str(folder))
+        if not self.name_edit.text().strip():
+            self.name_edit.setText("Golem")
+        # 4. Save it all.
+        self.save()
+        # 5. Make sure the brain is actually there, then launch.
+        if not ollama_running():
+            ok = QMessageBox.question(
+                self, "Easy Mode - set up the free brain (one time)",
+                "Golem runs on a free local 'brain' called Ollama, and it isn't set up yet.\n\n"
+                "I'll download and open its installer - click Next through it, then press Easy Mode again "
+                "to finish and launch Golem. Do that now?",
+                QMessageBox.Yes | QMessageBox.No)
+            if ok == QMessageBox.Yes and os.name == "nt":
+                self._select_tab("Brain")
+                self.install_ollama()
+            return
+        if not ollama_models():
+            model = (self._rec or {}).get("text") or (self._rec or {}).get("local") or "llama3.2:3b"
+            QMessageBox.information(
+                self, "Easy Mode - downloading the brain",
+                f"Getting the '{model}' model now - it's a few GB and only happens once. "
+                "Golem will open on its own when it's ready; you can watch progress on the Brain tab.")
+            self._easy_pending_launch = True
+            self._select_tab("Brain")
+            self.pull_combo.setCurrentText(model)
+            self.pull_model()
+            return
+        self.launch_agent()
+        self.flash("Easy Mode: launched a safe, friendly Golem in its own window.")
 
     def apply_profile(self, pid: str):
         prof = PROFILES.get(pid, {})
@@ -1139,6 +1302,10 @@ class Builder(QWidget):
         self.sticky_check.setChecked(bool(c.get("sticky_taint", False)))
         self.hardened_check.setChecked(bool(c.get("hardened", False)))
         self.update_check_box.setChecked(bool(c.get("check_updates", True)))
+        if getattr(self, "ollama_install_edit", None) is not None:
+            self.ollama_install_edit.setText(c.get("ollama_install_dir", "") or "")
+        if getattr(self, "ollama_models_edit", None) is not None:
+            self.ollama_models_edit.setText(c.get("ollama_models_dir", "") or "")
         s = c.get("serve", {})
         self.serve_check.setChecked(bool(s.get("enabled", False)))
         self.port_spin.setValue(int(s.get("port", 8765)))

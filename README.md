@@ -10,6 +10,9 @@ Golem is three apps behind one installer: the **Builder** (set it up with checkb
 with it), and the **core** (the agent itself). The model only ever *asks* to use a tool — your side decides what
 actually runs.
 
+> 🟢 **New to this? Never used an AI before?** Read **[GETTING-STARTED.md](GETTING-STARTED.md)** — it's three
+> steps, no jargon. Short version: install, open Golem Builder, click the blue **⚡ Easy Mode** button, done.
+
 ## Contents
 
 - [Safety and dangers (read this first)](#safety-and-dangers-read-this-first)
@@ -380,6 +383,8 @@ The Builder reads and writes `agent_config.json` next to the agent. You can also
     "enabled": false, "backend": "auto", "network": "off"   // network: off | loopback | on
   },
   "check_updates": true,         // check GitHub for a newer release when the Builder opens
+  "ollama_install_dir": "",      // optional: install Ollama off C: (passed to its installer's /DIR)
+  "ollama_models_dir": "",       // optional: keep the big model files off C: (sets OLLAMA_MODELS)
   "personality": ""              // written to personality.txt on launch
 }
 ```
