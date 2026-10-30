@@ -15,6 +15,7 @@ actually runs.
 - [Safety and dangers (read this first)](#safety-and-dangers-read-this-first)
 - [What you need](#what-you-need)
 - [Quick start](#quick-start)
+- [Keeping Golem up to date](#keeping-golem-up-to-date)
 - [The three apps](#the-three-apps)
 - [How it works](#how-it-works)
 - [The Builder](#the-builder)
@@ -91,6 +92,17 @@ afford to lose — and keep backups.**
 4. Click **Save & Launch agent** — your agent opens in its own chat window. Talk to it.
 
 **From source (developers):** see [Running and building from source](#running-and-building-from-source).
+
+## Keeping Golem up to date
+
+You don't have to reinstall for every new version. When you open the **Builder**, it quietly checks GitHub for a
+newer release (this is a read-only check — turn it off on the **Add-ons** tab if you'd rather it didn't). If one
+exists, a bar appears at the top: click **What's new** to read the notes, or **Update now** to download the new
+installer and run it. The installer upgrades your copy in place — same folder, no admin, no uninstall first.
+
+Golem will **never download or run an update on its own** — the check is automatic, but the download-and-install
+only happens when *you* click the button. (A program that silently fetched and ran code from the internet would be
+exactly the thing Golem is trying not to be.) You can also check any time with **Add-ons → Check for updates now**.
 
 ## The three apps
 
@@ -193,10 +205,13 @@ If running an AI agent on your PC makes you nervous, tick **Hardened Mode** on t
 have to find them one by one:
 
 - The agent can only **read *and* change** files inside your allowed folders — not just write to them. (Set some
-  folders first, or there's nothing to confine it to.)
+  folders first, or there's nothing to confine it to — the Builder reminds you.) This also covers **shell
+  commands**: `run_shell` is kept inside your folders and off secret paths too, so it can't be a side door around
+  the file tools.
 - It stays **extra-careful for the whole session** once it has read anything from the web or another program: it
   re-asks before each change even if you'd said "always allow", because that outside content could be trying to
-  steer it (prompt injection).
+  steer it (prompt injection). **Over the phone** (where nothing can prompt you), changes are instead *held* until
+  your next message once untrusted content has been read that turn.
 - **Phone access binds to this PC only** (loopback). If you still want your phone to reach it, pass your Tailscale
   address, e.g. `--host 100.x.y.z`.
 
@@ -310,7 +325,8 @@ The Builder reads and writes `agent_config.json` next to the agent. You can also
   "serve": { "enabled": false, "host": "0.0.0.0", "port": 8765, "token": "" },
   "folders": [],                 // if non-empty, writes/edits/deletes stay inside these
   "sticky_taint": false,         // stay extra-careful all session after reading untrusted content
-  "hardened": false,             // Hardened Mode: confine reads too + sticky taint + loopback-only serve
+  "hardened": false,             // Hardened Mode: confine reads + shell too, sticky taint, loopback-only serve
+  "check_updates": true,         // check GitHub for a newer release when the Builder opens
   "personality": ""              // written to personality.txt on launch
 }
 ```

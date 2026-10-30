@@ -13,6 +13,7 @@ Run it with:  .venv\\Scripts\\python builder.py   (needs PySide6: pip install Py
 
 import json
 import os
+import re
 import subprocess
 import sys
 import secrets
@@ -37,6 +38,12 @@ else:
     AGENT_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = AGENT_DIR / "agent_config.json"
 AGENT_PY = AGENT_DIR / "agent.py"
+
+try:
+    sys.path.insert(0, str(AGENT_DIR))
+    from version import __version__ as VERSION, GITHUB_REPO
+except Exception:  # noqa: BLE001 - never block the Builder if version.py is missing
+    VERSION, GITHUB_REPO = "0.0.0", "gingygames710/Golem"
 
 # Keep this list in step with FEATURE_TOOLS in agent.py. (key, label, one-line help)
 FEATURES = [
@@ -210,10 +217,11 @@ class DownloadThread(QThread):
     line = Signal(str)
     done = Signal(str)
 
-    def __init__(self, url, dest):
+    def __init__(self, url, dest, label="Ollama"):
         super().__init__()
         self.url = url
         self.dest = dest
+        self.label = label
 
     def run(self):
         try:
@@ -229,19 +237,52 @@ class DownloadThread(QThread):
                     got += len(buf)
                     mb = got / 1_048_576
                     if total:
-                        self.line.emit(f"Downloading Ollama... {got * 100 // total}%  ({mb:.0f} MB)")
+                        self.line.emit(f"Downloading {self.label}... {got * 100 // total}%  ({mb:.0f} MB)")
                     else:
-                        self.line.emit(f"Downloading Ollama... {mb:.0f} MB")
+                        self.line.emit(f"Downloading {self.label}... {mb:.0f} MB")
             self.done.emit(str(self.dest))
         except Exception as e:  # noqa: BLE001 - report, don't crash the GUI
             self.line.emit(f"Download failed: {e}")
             self.done.emit("")
 
 
+def _parse_ver(tag: str) -> tuple:
+    """Turn a tag like 'v0.5.1' into (0, 5, 1) for comparison; missing parts count as 0."""
+    nums = re.findall(r"\d+", tag or "")[:3]
+    return tuple(int(n) for n in nums) + (0,) * (3 - len(nums))
+
+
+class UpdateCheckThread(QThread):
+    """Ask GitHub (read-only) whether a newer release exists. Emits a dict; never raises into the GUI.
+    It only *checks* - downloading and running an update is a separate step the user clicks."""
+    result = Signal(dict)
+
+    def run(self):
+        try:
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+            req = urllib.request.Request(url, headers={"User-Agent": "Golem-Builder",
+                                                       "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                rel = json.loads(r.read().decode("utf-8"))
+            tag = rel.get("tag_name", "")
+            installer = next((a for a in rel.get("assets", []) if a.get("name") == "Golem-setup.exe"), None)
+            self.result.emit({
+                "ok": True,
+                "tag": tag,
+                "newer": _parse_ver(tag) > _parse_ver(VERSION),
+                "url": rel.get("html_url", ""),
+                "notes": (rel.get("body") or "").strip(),
+                "asset_url": (installer or {}).get("browser_download_url", ""),
+                "asset_size": (installer or {}).get("size", 0),
+            })
+        except Exception as e:  # noqa: BLE001 - offline / rate-limited / no releases: just report it
+            self.result.emit({"ok": False, "error": str(e)})
+
+
 class Builder(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Golem Builder")
+        self.setWindowTitle(f"Golem Builder {VERSION}")
         self.resize(720, 760)
         _ico = AGENT_DIR / "icon.ico"
         if _ico.exists():
@@ -249,6 +290,9 @@ class Builder(QWidget):
         self.pull_thread = None
         self.addon_thread = None
         self.dl_thread = None  # Ollama installer download
+        self.update_thread = None  # GitHub release check
+        self.update_dl = None      # downloading the new installer
+        self.update_info = None    # the latest release info once checked
         self._rec = None  # the latest GPU model recommendation
         self.cfg = self.load_config()
 
@@ -257,6 +301,7 @@ class Builder(QWidget):
         title.setFont(QFont("", 18, QFont.Bold))
         root.addWidget(title)
         root.addWidget(QLabel("Build a custom AI agent for this PC. Everything below is optional."))
+        root.addWidget(self._update_bar())
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._model_tab(), "Brain")
@@ -284,6 +329,8 @@ class Builder(QWidget):
         self.refresh_ollama_status()
         if self._fresh:                # first run: apply the GPU recommendation automatically
             self.apply_recommendation()
+        if self.cfg.get("check_updates", True):  # quietly see if a newer release is out (read-only)
+            self.check_for_updates(manual=False)
 
     # ---------------------------------------------------------------- config I/O
 
@@ -329,16 +376,126 @@ class Builder(QWidget):
             "folders": [self.folders_list.item(i).text() for i in range(self.folders_list.count())],
             "sticky_taint": self.sticky_check.isChecked(),
             "hardened": self.hardened_check.isChecked(),
+            "check_updates": self.update_check_box.isChecked(),
             "personality": self.persona_edit.toPlainText().strip(),
         }
 
     def save(self):
         self.cfg = self.collect()
+        # Hardened Mode confines reads/writes to the allowed folders - with none set, there's nothing to
+        # confine to, so point that out (once per save, not a hard block).
+        if self.cfg.get("hardened") and not self.cfg.get("folders"):
+            QMessageBox.information(
+                self, "Hardened Mode - add a folder",
+                "Hardened Mode is on but you haven't set any allowed folders, so there's nothing to confine "
+                "the agent to - reads and writes stay wide open.\n\nAdd at least one folder on the Folders "
+                "tab to get the full benefit. (The other Hardened protections - sticky re-confirm and "
+                "PC-only phone access - still apply.)")
         CONFIG_FILE.write_text(json.dumps(self.cfg, indent=2), encoding="utf-8")
         self.flash(f"Saved to {CONFIG_FILE.name}")
 
     def flash(self, msg: str):
         self.status.setText(msg)
+
+    # ---------------------------------------------------------------- auto-update
+    #
+    # Checking is automatic and read-only (a GitHub API call on launch). Downloading and RUNNING the new
+    # installer only happens when the user clicks "Update now" - Golem never silently fetches and executes
+    # code from the internet. The installer upgrades in place (same per-user folder, no admin, no reinstall).
+
+    def _update_bar(self) -> QWidget:
+        self.update_bar = QFrame()
+        self.update_bar.setStyleSheet("background:#1c2a1c; border:1px solid #2f4a2f; border-radius:8px;")
+        lay = QHBoxLayout(self.update_bar)
+        lay.setContentsMargins(12, 8, 12, 8)
+        self.update_label = QLabel("")
+        self.update_label.setStyleSheet("color:#8fd08f; font-weight:600;")
+        self.update_label.setWordWrap(True)
+        lay.addWidget(self.update_label, 1)
+        self.update_notes_btn = QPushButton("What's new")
+        self.update_notes_btn.clicked.connect(self._show_update_notes)
+        self.update_now_btn = QPushButton("Update now")
+        self.update_now_btn.clicked.connect(self.do_update)
+        self.update_skip_btn = QPushButton("Skip")
+        self.update_skip_btn.clicked.connect(lambda: self.update_bar.setVisible(False))
+        for b in (self.update_notes_btn, self.update_now_btn, self.update_skip_btn):
+            lay.addWidget(b)
+        self.update_bar.setVisible(False)  # hidden until a newer release is found
+        return self.update_bar
+
+    def check_for_updates(self, manual: bool = False):
+        if self.update_thread and self.update_thread.isRunning():
+            return
+        self._manual_check = manual
+        if manual:
+            self.flash("Checking for updates...")
+        self.update_thread = UpdateCheckThread()
+        self.update_thread.result.connect(self._on_update_result)
+        self.update_thread.start()
+
+    def _on_update_result(self, info: dict):
+        if not info.get("ok"):
+            if getattr(self, "_manual_check", False):
+                self.flash(f"Update check failed: {info.get('error', 'unknown error')}")
+            return
+        self.update_info = info
+        if info.get("newer") and info.get("asset_url"):
+            self.update_label.setText(f"Golem {info['tag']} is available  (you have {VERSION}).")
+            self.update_bar.setVisible(True)
+            if getattr(self, "_manual_check", False):
+                self.flash("")
+        elif info.get("newer") and not info.get("asset_url"):
+            # A newer tag exists but no installer asset yet (release still being published)
+            if getattr(self, "_manual_check", False):
+                self.flash(f"Golem {info['tag']} is listed but its installer isn't uploaded yet.")
+        elif getattr(self, "_manual_check", False):
+            self.flash(f"You're up to date (Golem {VERSION}).")
+
+    def _show_update_notes(self):
+        info = self.update_info or {}
+        notes = info.get("notes") or "(no release notes)"
+        box = QMessageBox(self)
+        box.setWindowTitle(f"What's new in Golem {info.get('tag', '')}")
+        box.setText(notes[:4000])
+        open_btn = box.addButton("Open release page", QMessageBox.ActionRole)
+        box.addButton("Close", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_btn and info.get("url"):
+            webbrowser.open(info["url"])
+
+    def do_update(self):
+        info = self.update_info or {}
+        url = info.get("asset_url")
+        if not url:
+            QMessageBox.warning(self, "No installer", "Couldn't find the installer for the new release.")
+            return
+        mb = round((info.get("asset_size") or 0) / 1_048_576)
+        ok = QMessageBox.question(
+            self, "Download and install the update?",
+            f"This will download Golem {info.get('tag', '')} (about {mb} MB) from GitHub and run the "
+            f"installer, which upgrades your current copy in place (no admin needed).\n\nGolem will close "
+            f"during the install. Continue?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if ok != QMessageBox.Yes:
+            return
+        dest = Path(os.environ.get("TEMP", str(AGENT_DIR))) / "Golem-setup.exe"
+        self.update_now_btn.setEnabled(False)
+        self.update_dl = DownloadThread(url, str(dest), label=f"Golem {info.get('tag', '')}")
+        self.update_dl.line.connect(self.flash)
+        self.update_dl.done.connect(self._on_update_downloaded)
+        self.update_dl.start()
+
+    def _on_update_downloaded(self, path: str):
+        self.update_now_btn.setEnabled(True)
+        if not path:
+            QMessageBox.critical(self, "Download failed", "The update could not be downloaded. Try again later.")
+            return
+        try:
+            os.startfile(path)  # launch the installer; it closes/replaces the running app
+            self.flash("Installer launched - follow its prompts. Golem will restart updated.")
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Could not start the installer",
+                                 f"Downloaded to {path}, but couldn't run it:\n{e}")
 
     # ---------------------------------------------------------------- Brain tab
 
@@ -738,6 +895,26 @@ class Builder(QWidget):
         rg.addLayout(rrow)
         lay.addWidget(rea_box)
 
+        upd_box = QGroupBox("Updates")
+        ug = QVBoxLayout(upd_box)
+        ug.addWidget(QLabel(f"You're running Golem {VERSION}."))
+        self.update_check_box = QCheckBox("Check GitHub for new versions when the Builder opens")
+        self.update_check_box.setChecked(True)
+        ug.addWidget(self.update_check_box)
+        urow = QHBoxLayout()
+        chk_btn = QPushButton("Check for updates now")
+        chk_btn.clicked.connect(lambda: self.check_for_updates(manual=True))
+        urow.addWidget(chk_btn)
+        urow.addStretch(1)
+        ug.addLayout(urow)
+        unote = QLabel("Checking only reads the latest release info. If there's a new version, a bar appears "
+                       "at the top - clicking Update now downloads the installer and runs it (upgrades in "
+                       "place, no admin, no reinstall). Golem never downloads or runs an update on its own.")
+        unote.setStyleSheet("color:#888;")
+        unote.setWordWrap(True)
+        ug.addWidget(unote)
+        lay.addWidget(upd_box)
+
         self.addon_log = QLabel("")
         self.addon_log.setStyleSheet("color:#888;")
         self.addon_log.setWordWrap(True)
@@ -829,6 +1006,7 @@ class Builder(QWidget):
         self.folders_list.addItems([str(f) for f in c.get("folders", [])])
         self.sticky_check.setChecked(bool(c.get("sticky_taint", False)))
         self.hardened_check.setChecked(bool(c.get("hardened", False)))
+        self.update_check_box.setChecked(bool(c.get("check_updates", True)))
         s = c.get("serve", {})
         self.serve_check.setChecked(bool(s.get("enabled", False)))
         self.port_spin.setValue(int(s.get("port", 8765)))

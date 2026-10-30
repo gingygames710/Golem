@@ -75,6 +75,14 @@ def agent_name() -> str:
         return "Golem"
 
 
+def agent_hardened() -> bool:
+    """True when the saved config has Hardened Mode on, so the window can show a lock badge."""
+    try:
+        return bool(json.loads(CONFIG_FILE.read_text(encoding="utf-8")).get("hardened"))
+    except Exception:
+        return False
+
+
 class Reader(QThread):
     """Reads the agent's output in chunks (not lines, so a no-newline prompt still shows)."""
     chunk = Signal(str)
@@ -166,6 +174,14 @@ class AgentWindow(QWidget):
         box.addWidget(nm)
         box.addWidget(self.sub)
         h.addLayout(box)
+        if agent_hardened():
+            badge = QLabel("🔒 Hardened")
+            badge.setStyleSheet("color:#8fd08f; background:#1c2a1c; border:1px solid #2f4a2f; "
+                                "border-radius:8px; padding:4px 10px; font-size:12px; font-weight:600;")
+            badge.setToolTip("Hardened Mode is on: the agent is confined to your allowed folders, stays "
+                             "extra-careful after reading untrusted content, and phone access is PC-only.")
+            h.addSpacing(10)
+            h.addWidget(badge)
         h.addStretch(1)
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setCursor(Qt.PointingHandCursor)
