@@ -26,6 +26,7 @@ actually runs.
 - [Tools the agent has](#tools-the-agent-has)
 - [Choosing a model](#choosing-a-model)
 - [Personality](#personality)
+- [Appearance](#appearance)
 - [Limiting it to folders](#limiting-it-to-folders)
 - [Hardened Mode (for cautious users)](#hardened-mode-for-cautious-users)
 - [Sandbox Mode (a real wall)](#sandbox-mode-a-real-wall)
@@ -195,6 +196,21 @@ Give the agent a name and a voice in the Builder's Personality tab (or edit `per
 loaded into the system prompt. It sets how the agent *talks*, not its judgement — it still tests its work, asks
 permission, and refuses unsafe things. A small local model follows a short, light personality better than a long
 one.
+
+## Appearance
+
+Make the agent window feel like yours. Click the **🎨** button in the agent window's header to open the
+**Appearance** panel:
+
+- **Theme presets** — Midnight (default), Light, Terminal, Solarized, Rose — one click.
+- **Colour pickers** for the background, panels, text, your message bubbles, the agent's bubbles, and the
+  accent.
+- **Font** family (any font on your PC) and size.
+- **A custom background image** — choose any image and it sits behind the chat, with a *Darken* slider so
+  your messages stay readable.
+
+Every change previews live. **Save** keeps it (stored in the config under `appearance`); **Reset to
+default** puts it back. It's purely look-and-feel — nothing about what the agent does changes.
 
 ## Limiting it to folders
 

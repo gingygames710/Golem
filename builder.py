@@ -423,7 +423,15 @@ class Builder(QWidget):
         }
 
     def save(self):
-        self.cfg = self.collect()
+        # Preserve keys the Builder doesn't manage (e.g. the agent window's "appearance") instead of
+        # dropping them: start from the existing file and let the collected settings win.
+        merged = {}
+        try:
+            merged = json.loads(CONFIG_FILE.read_text(encoding="utf-8-sig"))
+        except Exception:
+            merged = {}
+        merged.update(self.collect())
+        self.cfg = merged
         # Hardened Mode confines reads/writes to the allowed folders - with none set, there's nothing to
         # confine to, so point that out (once per save, not a hard block).
         if self.cfg.get("hardened") and not self.cfg.get("folders"):

@@ -20,10 +20,11 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QFont, QIcon, QPixmap
+from PySide6.QtGui import QFont, QIcon, QPixmap, QColor, QPainter
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QScrollArea, QFrame, QFileDialog,
+    QColorDialog, QFontComboBox, QSlider, QDialog, QGridLayout, QSpinBox, QComboBox,
 )
 
 # Same control-line protocol the core (agent.py) parses to attach an image/file to the next message.
@@ -53,6 +54,56 @@ AGENT_BG = "#232834"  # slate - the agent's messages
 TEXT    = "#e7e9f0"
 MUTED   = "#8b93a7"
 ACCENT  = "#6366f1"
+
+# 0.8.0 appearance: the palette above is the default ("Midnight"). The user can recolour the window,
+# change the font, and set a background image from the agent window's Appearance panel; their choices
+# are saved in the config under "appearance". Everything here is additive - no change if it's untouched.
+DEFAULT_APPEARANCE = {
+    "theme": "Midnight",
+    "bg": BG, "panel": PANEL, "text": TEXT, "muted": MUTED, "accent": ACCENT,
+    "user_bubble": USER_BG, "agent_bubble": AGENT_BG,
+    "font_family": "Segoe UI", "font_size": 14,
+    "bg_image": "", "bg_dim": 45,   # dim: 0-80, how much black to lay over the image so text stays readable
+}
+THEMES = {
+    "Midnight":  {"bg": "#0f1115", "panel": "#161922", "text": "#e7e9f0", "muted": "#8b93a7",
+                  "accent": "#6366f1", "user_bubble": "#4f46e5", "agent_bubble": "#232834"},
+    "Light":     {"bg": "#f4f5f8", "panel": "#e6e8ef", "text": "#1a1d24", "muted": "#5b6475",
+                  "accent": "#4f46e5", "user_bubble": "#4f46e5", "agent_bubble": "#dde1ea"},
+    "Terminal":  {"bg": "#0a0e0a", "panel": "#0f160f", "text": "#c8f7c8", "muted": "#6f9a6f",
+                  "accent": "#2ecc71", "user_bubble": "#1f7a3f", "agent_bubble": "#12240f"},
+    "Solarized": {"bg": "#002b36", "panel": "#073642", "text": "#eee8d5", "muted": "#93a1a1",
+                  "accent": "#268bd2", "user_bubble": "#268bd2", "agent_bubble": "#0b3d49"},
+    "Rose":      {"bg": "#1a1016", "panel": "#241520", "text": "#f6e7ee", "muted": "#b08699",
+                  "accent": "#e85d8a", "user_bubble": "#c13f6c", "agent_bubble": "#2c1a25"},
+}
+
+
+def load_appearance() -> dict:
+    ap = dict(DEFAULT_APPEARANCE)
+    try:
+        saved = _config().get("appearance") or {}
+        ap.update({k: v for k, v in saved.items() if k in DEFAULT_APPEARANCE and v is not None})
+    except Exception:
+        pass
+    return ap
+
+
+def save_appearance(ap: dict):
+    try:
+        cfg = _config()
+        cfg["appearance"] = ap
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _apply_palette_globals(ap: dict):
+    """Point the module palette constants at the user's chosen colours, so the whole window builds themed
+    without touching every stylesheet. Only one window exists, so reusing the globals is safe."""
+    global BG, PANEL, TEXT, MUTED, ACCENT, USER_BG, AGENT_BG
+    BG, PANEL, TEXT, MUTED, ACCENT = ap["bg"], ap["panel"], ap["text"], ap["muted"], ap["accent"]
+    USER_BG, AGENT_BG = ap["user_bubble"], ap["agent_bubble"]
 
 
 def agent_python() -> str:
@@ -137,13 +188,12 @@ class AgentWindow(QWidget):
         self.resize(820, 720)
         if ICON.exists():
             self.setWindowIcon(QIcon(str(ICON)))
-        self.setStyleSheet(f"""
-            QWidget {{ background:{BG}; color:{TEXT}; font-family:'Segoe UI','Inter',sans-serif; font-size:14px; }}
-            QScrollArea {{ border:none; }}
-            QScrollBar:vertical {{ background:transparent; width:10px; margin:2px; }}
-            QScrollBar::handle:vertical {{ background:#2c3342; border-radius:5px; min-height:30px; }}
-            QScrollBar::add-line, QScrollBar::sub-line {{ height:0; }}
-        """)
+        self.ap = load_appearance()
+        _apply_palette_globals(self.ap)   # theme the whole window before any widgets are built
+        self.bubbles = []                 # (label, who): so an appearance change can recolour past messages
+        self._bg_path = ""
+        self._refresh_bg_pixmap()
+        self.setStyleSheet(self._window_qss())
 
         self.proc = None
         self.reader = None
@@ -160,7 +210,7 @@ class AgentWindow(QWidget):
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        holder = QWidget()
+        self._holder = holder = QWidget()
         self.col = QVBoxLayout(holder)
         self.col.setAlignment(Qt.AlignTop)
         self.col.setContentsMargins(18, 14, 18, 14)
@@ -169,16 +219,91 @@ class AgentWindow(QWidget):
         root.addWidget(self.scroll, 1)
         self.scroll.verticalScrollBar().rangeChanged.connect(
             lambda _mn, mx: self.scroll.verticalScrollBar().setValue(mx))
+        self._apply_bg_backdrop()   # paint the custom background image behind the chat, if one is set
 
         root.addWidget(self._permission_bar())
         root.addWidget(self._composer())
 
         self.start_agent()
 
+    # ---------------------------------------------------------------- appearance (0.8.0)
+
+    def _window_qss(self) -> str:
+        ap = self.ap
+        return (
+            f"QWidget {{ background:{ap['bg']}; color:{ap['text']}; "
+            f"font-family:'{ap['font_family']}','Segoe UI','Inter',sans-serif; font-size:{ap['font_size']}px; }}"
+            " QScrollArea { border:none; background:transparent; }"
+            " QScrollBar:vertical { background:transparent; width:10px; margin:2px; }"
+            " QScrollBar::handle:vertical { background:#2c3342; border-radius:5px; min-height:30px; }"
+            " QScrollBar::add-line, QScrollBar::sub-line { height:0; }")
+
+    def _entry_qss(self) -> str:
+        return (f"background:{self.ap['panel']}; color:{self.ap['text']}; padding:11px 14px; "
+                f"border:1px solid {self.ap['muted']}; border-radius:12px; font-size:14px;")
+
+    def _refresh_bg_pixmap(self):
+        """Prepare the background image: load it, lay the chosen amount of black over it (so text stays
+        readable), and save the result next to the agent for the stylesheet to use. No image -> nothing."""
+        self._bg_path = ""
+        src = (self.ap.get("bg_image") or "").strip()
+        if not src or not Path(src).exists():
+            return
+        pm = QPixmap(src)
+        if pm.isNull():
+            return
+        dim = max(0, min(80, int(self.ap.get("bg_dim", 45)))) / 100.0
+        if dim > 0:
+            p = QPainter(pm)
+            p.fillRect(pm.rect(), QColor(0, 0, 0, int(dim * 255)))
+            p.end()
+        out = AGENT_DIR / ".golem_bg.png"
+        try:
+            if pm.save(str(out), "PNG"):
+                self._bg_path = str(out)
+        except Exception:
+            self._bg_path = ""
+
+    def _apply_bg_backdrop(self):
+        vp = self.scroll.viewport()
+        if self._bg_path:
+            url = self._bg_path.replace("\\", "/")
+            vp.setStyleSheet(f"border-image: url('{url}') 0 0 0 0 stretch stretch;")
+            self._holder.setStyleSheet("background:transparent;")
+        else:
+            vp.setStyleSheet(f"background:{self.ap['bg']};")
+            self._holder.setStyleSheet(f"background:{self.ap['bg']};")
+
+    def apply_appearance(self, ap: dict):
+        """Re-theme the live window from an appearance dict (used by the Appearance panel's preview)."""
+        self.ap = ap
+        _apply_palette_globals(ap)
+        self.setStyleSheet(self._window_qss())
+        self._header_bar.setStyleSheet(f"background:{PANEL};")
+        self._name_lbl.setStyleSheet(f"color:{TEXT}; font-size:17px; font-weight:600;")
+        self.sub.setStyleSheet(f"color:{MUTED}; font-size:12px;")
+        self.perm_bar.setStyleSheet(f"background:{PANEL}; border-top:1px solid #2a2f3a;")
+        self._composer_bar.setStyleSheet(f"background:{PANEL}; border-top:1px solid #20242e;")
+        self.entry.setStyleSheet(self._entry_qss())
+        self.send_btn.setStyleSheet(f"QPushButton {{ background:{ACCENT}; color:white; padding:11px 20px; "
+                                    f"border:none; border-radius:12px; font-weight:600; }}")
+        for lbl, who in self.bubbles:
+            if who == "user":
+                lbl.setStyleSheet(f"background:{USER_BG}; color:white; padding:10px 14px; border-radius:14px;")
+            elif who == "agent":
+                lbl.setStyleSheet(f"background:{AGENT_BG}; color:{TEXT}; padding:10px 14px; border-radius:14px;")
+            elif who == "system":
+                lbl.setStyleSheet(f"color:{MUTED}; font-size:12px; padding:2px;")
+        self._refresh_bg_pixmap()
+        self._apply_bg_backdrop()
+
+    def open_appearance(self):
+        AppearanceDialog(self).exec()
+
     # ---------------------------------------------------------------- building blocks
 
     def _header(self) -> QWidget:
-        bar = QFrame()
+        self._header_bar = bar = QFrame()
         bar.setStyleSheet(f"background:{PANEL};")
         h = QHBoxLayout(bar)
         h.setContentsMargins(16, 10, 16, 10)
@@ -188,7 +313,7 @@ class AgentWindow(QWidget):
         h.addWidget(avatar)
         box = QVBoxLayout()
         box.setSpacing(0)
-        nm = QLabel(self.name)
+        self._name_lbl = nm = QLabel(self.name)
         nm.setStyleSheet(f"color:{TEXT}; font-size:17px; font-weight:600;")
         self.sub = QLabel("starting up...")
         self.sub.setStyleSheet(f"color:{MUTED}; font-size:12px;")
@@ -220,6 +345,13 @@ class AgentWindow(QWidget):
             h.addSpacing(10)
             h.addWidget(badge)
         h.addStretch(1)
+        self.appear_btn = QPushButton("🎨")
+        self.appear_btn.setCursor(Qt.PointingHandCursor)
+        self.appear_btn.setToolTip("Appearance - colors, font, and background image")
+        self.appear_btn.setStyleSheet("background:transparent; border:1px solid #2a2f3a; "
+                                      "border-radius:8px; padding:6px 11px; font-size:15px;")
+        self.appear_btn.clicked.connect(self.open_appearance)
+        h.addWidget(self.appear_btn)
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setCursor(Qt.PointingHandCursor)
         self.stop_btn.setStyleSheet("color:#f0c674; background:transparent; border:1px solid #4a3f2a; "
@@ -253,7 +385,7 @@ class AgentWindow(QWidget):
         return self.perm_bar
 
     def _composer(self) -> QWidget:
-        bar = QFrame()
+        self._composer_bar = bar = QFrame()
         bar.setStyleSheet(f"background:{PANEL}; border-top:1px solid #20242e;")
         outer = QVBoxLayout(bar)
         outer.setContentsMargins(16, 10, 16, 14)
@@ -279,9 +411,7 @@ class AgentWindow(QWidget):
 
         self.entry = QLineEdit()
         self.entry.setPlaceholderText(f"Message {self.name}...")
-        self.entry.setStyleSheet(
-            "background:#1b1f27; color:#eef0f5; padding:11px 14px; border:1px solid #2a2f3a; "
-            "border-radius:12px; font-size:14px;")
+        self.entry.setStyleSheet(self._entry_qss())
         self.entry.returnPressed.connect(self.send)
         h.addWidget(self.entry, 1)
 
@@ -334,6 +464,8 @@ class AgentWindow(QWidget):
             hl.addStretch(1)
             hl.addWidget(lbl)
             hl.addStretch(1)
+        if who in ("user", "agent", "system"):
+            self.bubbles.append((lbl, who))   # so the Appearance panel can recolour it live
         self.col.addWidget(row)
         return lbl
 
@@ -590,6 +722,168 @@ class AgentWindow(QWidget):
     def closeEvent(self, event):
         self._terminate()
         event.accept()
+
+
+class AppearanceDialog(QDialog):
+    """Make the agent window feel like yours: theme presets, colour pickers, font, and a background
+    image. Every change previews live on the window; Save writes it to the config."""
+    COLORS = [("bg", "Background"), ("panel", "Panels"), ("text", "Text"),
+              ("user_bubble", "Your messages"), ("agent_bubble", "Agent messages"), ("accent", "Accent / Send")]
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.window = window
+        self.setWindowTitle("Appearance")
+        self.resize(430, 580)
+        self._orig = dict(window.ap)   # restore this if the user cancels
+        self.ap = dict(window.ap)      # working copy that previews live
+        self._saved = False
+        self._swatches = {}
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Start from a theme:"))
+        prow = QHBoxLayout()
+        for name in THEMES:
+            b = QPushButton(name)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, n=name: self._apply_theme(n))
+            prow.addWidget(b)
+        lay.addLayout(prow)
+
+        lay.addWidget(QLabel("Colours (click a swatch):"))
+        grid = QGridLayout()
+        for i, (key, label) in enumerate(self.COLORS):
+            grid.addWidget(QLabel(label), i, 0)
+            sw = QPushButton()
+            sw.setFixedSize(64, 24)
+            sw.setCursor(Qt.PointingHandCursor)
+            sw.clicked.connect(lambda _=False, k=key: self._pick_color(k))
+            self._swatches[key] = sw
+            grid.addWidget(sw, i, 1)
+        grid.setColumnStretch(2, 1)
+        lay.addLayout(grid)
+
+        frow = QHBoxLayout()
+        frow.addWidget(QLabel("Font:"))
+        self.font_combo = QFontComboBox()
+        self.font_combo.setCurrentFont(QFont(self.ap["font_family"]))
+        self.font_combo.currentFontChanged.connect(lambda f: self._set("font_family", f.family()))
+        frow.addWidget(self.font_combo, 1)
+        self.size_spin = QSpinBox()
+        self.size_spin.setRange(10, 26)
+        self.size_spin.setValue(int(self.ap["font_size"]))
+        self.size_spin.valueChanged.connect(lambda v: self._set("font_size", int(v)))
+        frow.addWidget(self.size_spin)
+        lay.addLayout(frow)
+
+        lay.addWidget(QLabel("Background image (optional):"))
+        brow = QHBoxLayout()
+        self.bg_label = QLabel(self._bg_name())
+        self.bg_label.setStyleSheet("color:#8b93a7;")
+        choose = QPushButton("Choose...")
+        choose.clicked.connect(self._pick_bg)
+        clear = QPushButton("Clear")
+        clear.clicked.connect(self._clear_bg)
+        brow.addWidget(self.bg_label, 1)
+        brow.addWidget(choose)
+        brow.addWidget(clear)
+        lay.addLayout(brow)
+        drow = QHBoxLayout()
+        drow.addWidget(QLabel("Darken image:"))
+        self.dim_slider = QSlider(Qt.Horizontal)
+        self.dim_slider.setRange(0, 80)
+        self.dim_slider.setValue(int(self.ap["bg_dim"]))
+        self.dim_slider.valueChanged.connect(lambda v: self._set("bg_dim", int(v)))
+        drow.addWidget(self.dim_slider, 1)
+        lay.addLayout(drow)
+
+        lay.addStretch(1)
+        brow2 = QHBoxLayout()
+        reset = QPushButton("Reset to default")
+        reset.clicked.connect(self._reset)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self._cancel)
+        save = QPushButton("Save")
+        save.setStyleSheet(f"background:{ACCENT}; color:white; font-weight:600; padding:8px 18px; "
+                           "border:none; border-radius:8px;")
+        save.clicked.connect(self._save)
+        brow2.addWidget(reset)
+        brow2.addStretch(1)
+        brow2.addWidget(cancel)
+        brow2.addWidget(save)
+        lay.addLayout(brow2)
+        self._refresh_swatches()
+
+    def _bg_name(self):
+        p = self.ap.get("bg_image", "")
+        return Path(p).name if p else "(none)"
+
+    def _refresh_swatches(self):
+        for key, sw in self._swatches.items():
+            sw.setStyleSheet(f"background:{self.ap[key]}; border:1px solid #555; border-radius:4px;")
+
+    def _live(self):
+        self.window.apply_appearance(dict(self.ap))
+
+    def _set(self, key, val):
+        self.ap[key] = val
+        self._live()
+
+    def _apply_theme(self, name):
+        self.ap["theme"] = name
+        self.ap.update(THEMES[name])
+        self._refresh_swatches()
+        self._live()
+
+    def _pick_color(self, key):
+        c = QColorDialog.getColor(QColor(self.ap[key]), self, "Pick a colour")
+        if c.isValid():
+            self.ap[key] = c.name()
+            self._refresh_swatches()
+            self._live()
+
+    def _pick_bg(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Choose a background image", "",
+                                           "Images (*.png *.jpg *.jpeg *.webp *.bmp)")
+        if not f:
+            return
+        try:
+            import shutil
+            dest = AGENT_DIR / ("bg_custom" + Path(f).suffix.lower())
+            shutil.copy2(f, dest)   # keep a copy with the app so it persists
+            self.ap["bg_image"] = str(dest)
+        except Exception:
+            self.ap["bg_image"] = f
+        self.bg_label.setText(self._bg_name())
+        self._live()
+
+    def _clear_bg(self):
+        self.ap["bg_image"] = ""
+        self.bg_label.setText(self._bg_name())
+        self._live()
+
+    def _reset(self):
+        self.ap = dict(DEFAULT_APPEARANCE)
+        self.font_combo.setCurrentFont(QFont(self.ap["font_family"]))
+        self.size_spin.setValue(int(self.ap["font_size"]))
+        self.dim_slider.setValue(int(self.ap["bg_dim"]))
+        self.bg_label.setText(self._bg_name())
+        self._refresh_swatches()
+        self._live()
+
+    def _save(self):
+        save_appearance(self.ap)
+        self._saved = True
+        self.accept()
+
+    def _cancel(self):
+        self.window.apply_appearance(self._orig)   # revert the live preview
+        self.reject()
+
+    def closeEvent(self, e):
+        if not self._saved:
+            self.window.apply_appearance(self._orig)   # revert on the window-close (X) too
+        super().closeEvent(e)
 
 
 def main():
