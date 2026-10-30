@@ -75,12 +75,33 @@ def agent_name() -> str:
         return "Golem"
 
 
+def _config() -> dict:
+    try:
+        return json.loads(CONFIG_FILE.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+
+
 def agent_hardened() -> bool:
     """True when the saved config has Hardened Mode on, so the window can show a lock badge."""
+    return bool(_config().get("hardened"))
+
+
+def agent_sandboxed() -> bool:
+    """True when the saved config turns on the OS sandbox, for a stronger badge."""
+    return bool((_config().get("sandbox") or {}).get("enabled"))
+
+
+def agent_profile_label() -> str:
+    """The chosen profile's label (empty for the plain General profile), for a header chip."""
+    pid = _config().get("profile", "general")
+    if not pid or pid == "general":
+        return ""
     try:
-        return bool(json.loads(CONFIG_FILE.read_text(encoding="utf-8")).get("hardened"))
+        import agent
+        return agent.PROFILES.get(pid, {}).get("label", "")
     except Exception:
-        return False
+        return pid.title()
 
 
 class Reader(QThread):
@@ -174,7 +195,23 @@ class AgentWindow(QWidget):
         box.addWidget(nm)
         box.addWidget(self.sub)
         h.addLayout(box)
-        if agent_hardened():
+        prof = agent_profile_label()
+        if prof:
+            chip = QLabel(prof)
+            chip.setStyleSheet("color:#9ab; background:#1b2230; border:1px solid #2a3a4a; "
+                               "border-radius:8px; padding:4px 10px; font-size:12px; font-weight:600;")
+            chip.setToolTip(f"This agent is set up with the {prof} profile.")
+            h.addSpacing(10)
+            h.addWidget(chip)
+        if agent_sandboxed():
+            sb = QLabel("🧱 Sandboxed")
+            sb.setStyleSheet("color:#8fd0d0; background:#162a2a; border:1px solid #2f4a4a; "
+                             "border-radius:8px; padding:4px 10px; font-size:12px; font-weight:600;")
+            sb.setToolTip("Sandbox Mode: the agent's shell commands run inside an OS box where only your "
+                          "allowed folders exist, so a command can't reach the rest of your disk.")
+            h.addSpacing(8)
+            h.addWidget(sb)
+        elif agent_hardened():
             badge = QLabel("🔒 Hardened")
             badge.setStyleSheet("color:#8fd08f; background:#1c2a1c; border:1px solid #2f4a2f; "
                                 "border-radius:8px; padding:4px 10px; font-size:12px; font-weight:600;")

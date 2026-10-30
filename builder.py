@@ -45,11 +45,22 @@ try:
 except Exception:  # noqa: BLE001 - never block the Builder if version.py is missing
     VERSION, GITHUB_REPO = "0.0.0", "gingygames710/Golem"
 
+# The sector profiles and the sandbox probe live in agent.py (single source of truth). Best-effort:
+# the Builder still works if agent.py can't be imported here, just without the profile presets.
+try:
+    import agent as _agent_mod
+    PROFILES = _agent_mod.PROFILES
+except Exception:  # noqa: BLE001
+    _agent_mod = None
+    PROFILES = {"general": {"label": "General", "description": "Everything on, no guardrails.",
+                            "features": {}, "hardened": False, "sandbox": False, "persona": ""}}
+
 # Keep this list in step with FEATURE_TOOLS in agent.py. (key, label, one-line help)
 FEATURES = [
     ("shell",         "Run shell commands",            "PowerShell / bash - the core 'do things on my PC' power."),
     ("files",         "Read & edit files",             "Read, search, create and edit files on disk."),
     ("web",           "Search & read the web",         "Free DuckDuckGo search and fetch whole pages."),
+    ("shopping",      "Compare prices / shop",         "Find the best price across retailers (never buys without your OK)."),
     ("computer",      "Control screen / mouse / keys", "See the screen and click & type. Needs a vision model."),
     ("network_scan",  "Scan my local network",         "List devices on your own Wi-Fi (read-only discovery)."),
     ("godot",         "Godot game testing",            "Import and run Godot 4 projects headless, report errors."),
@@ -307,6 +318,9 @@ class Builder(QWidget):
         self.tabs.addTab(self._model_tab(), "Brain")
         self.tabs.addTab(self._features_tab(), "Features")
         self.tabs.addTab(self._folders_tab(), "Folders")
+        # Profile goes first (one-click setup) but is built last, so the boxes it drives already exist.
+        self.tabs.insertTab(0, self._profile_tab(), "Profile")
+        self.tabs.setCurrentIndex(0)
         self.tabs.addTab(self._personality_tab(), "Personality")
         self.tabs.addTab(self._phone_tab(), "Phone")
         self.tabs.addTab(self._addons_tab(), "Add-ons")
@@ -359,6 +373,7 @@ class Builder(QWidget):
         mode = "auto" if self.r_auto.isChecked() else ("local" if self.r_local.isChecked() else "claude")
         return {
             "name": self.name_edit.text().strip() or "Golem",
+            "profile": self.profile_combo.currentData() or "general",
             "model": {
                 "mode": mode,
                 "local_model": self.local_combo.currentText().strip(),
@@ -367,6 +382,11 @@ class Builder(QWidget):
                 "ctx": self.ctx_spin.value(),
             },
             "features": {key: cb.isChecked() for key, cb in self.feature_boxes.items()},
+            "sandbox": {
+                "enabled": self.sandbox_check.isChecked() if getattr(self, "sandbox_check", None) else False,
+                "backend": "auto",
+                "network": (self.network_combo.currentData() if getattr(self, "network_combo", None) else "off"),
+            },
             "serve": {
                 "enabled": self.serve_check.isChecked(),
                 "host": "0.0.0.0",
@@ -725,6 +745,62 @@ class Builder(QWidget):
 
     # ---------------------------------------------------------------- Features tab
 
+    # ---------------------------------------------------------------- Profile tab (0.6.0)
+
+    def _profile_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.addWidget(QLabel("Set this agent up for a job in one click. A profile fills the other tabs "
+                             "(features, folders, protections, voice) - you can still tweak anything "
+                             "before you save."))
+        self.profile_combo = QComboBox()
+        for pid, p in PROFILES.items():
+            self.profile_combo.addItem(p.get("label", pid), pid)
+        lay.addWidget(self.profile_combo)
+
+        self.profile_desc = QLabel("")
+        self.profile_desc.setWordWrap(True)
+        self.profile_desc.setStyleSheet("color:#888;")
+        lay.addWidget(self.profile_desc)
+
+        apply_btn = QPushButton("Apply this profile")
+        apply_btn.clicked.connect(self.apply_profile_clicked)
+        lay.addWidget(apply_btn)
+
+        note = QLabel("Profiles carry their own guardrails too - e.g. the Shopping agent never buys "
+                      "without your say-so, the Medical one keeps patient data on this PC, the Student "
+                      "one tutors instead of doing the homework. Those stay on whatever voice you pick.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#888;")
+        lay.addWidget(note)
+
+        self.profile_combo.currentIndexChanged.connect(self._profile_desc_update)
+        self._profile_desc_update()
+        lay.addStretch(1)
+        return w
+
+    def _profile_desc_update(self):
+        pid = self.profile_combo.currentData()
+        self.profile_desc.setText(PROFILES.get(pid, {}).get("description", ""))
+
+    def apply_profile_clicked(self):
+        self.apply_profile(self.profile_combo.currentData() or "general")
+
+    def apply_profile(self, pid: str):
+        prof = PROFILES.get(pid, {})
+        feats = prof.get("features") or {}
+        for key, cb in self.feature_boxes.items():
+            if key in feats:
+                cb.setChecked(bool(feats[key]))
+        self.hardened_check.setChecked(bool(prof.get("hardened", False)))
+        if prof.get("hardened"):
+            self.sticky_check.setChecked(True)
+        if getattr(self, "sandbox_check", None) is not None and self.sandbox_check.isEnabled():
+            self.sandbox_check.setChecked(bool(prof.get("sandbox", False)))
+        if prof.get("persona"):
+            self.persona_edit.setPlainText(prof["persona"])
+        self.flash(f"Applied the {prof.get('label', pid)} profile - review the tabs, then Save.")
+
     def _features_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -851,6 +927,52 @@ class Builder(QWidget):
         hnote.setWordWrap(True)
         lay.addWidget(hnote)
         self.hardened_check.toggled.connect(lambda on: on and self.sticky_check.setChecked(True))
+
+        # --- 0.6.0: the real OS sandbox, a sub-toggle under Hardened. Only enabled if a backend exists. ---
+        self.sandbox_check = QCheckBox("Real sandbox: run the agent's shell commands inside an OS box "
+                                       "(strongest protection)")
+        self.sandbox_check.setStyleSheet("color:#8fd0d0; font-weight:bold;")
+        lay.addWidget(self.sandbox_check)
+
+        net_row = QHBoxLayout()
+        net_row.addWidget(QLabel("Sandbox network:"))
+        self.network_combo = QComboBox()
+        for label, val in [("Off (most private)", "off"), ("Loopback only", "loopback"), ("On", "on")]:
+            self.network_combo.addItem(label, val)
+        net_row.addWidget(self.network_combo)
+        net_row.addStretch(1)
+        net_wrap = QWidget()
+        net_wrap.setLayout(net_row)
+        lay.addWidget(net_wrap)
+
+        backend = "none"
+        try:
+            if _agent_mod:
+                backend = _agent_mod.detect_sandbox_backend("auto")
+        except Exception:  # noqa: BLE001
+            backend = "none"
+        # Only Windows Sandbox is a working wall in this build; WSL is detected but its backend isn't
+        # wired yet, so don't offer a toggle that would silently fall back to in-process confinement.
+        if backend == "windows-sandbox":
+            self.sandbox_check.setEnabled(True)
+            sbx_msg = ("Available here via Windows Sandbox. When on, run_shell runs inside a box where only "
+                       "your allowed folders exist - even if a command breaks out of the agent, it can't "
+                       "reach the rest of your disk. Ticking this also turns on Hardened Mode.")
+        elif backend == "wsl":
+            self.sandbox_check.setEnabled(False)
+            sbx_msg = ("WSL is installed, but this build's real sandbox needs the Windows Sandbox feature "
+                       "(Windows Pro/Enterprise - search 'Turn Windows features on or off'). A WSL backend "
+                       "is coming. Hardened Mode above still gives in-process protection now.")
+        else:
+            self.sandbox_check.setEnabled(False)
+            sbx_msg = ("No OS sandbox backend found on this PC. Turn on the Windows Sandbox feature "
+                       "(Windows Pro/Enterprise) to enable this. Until then, Hardened Mode above still "
+                       "gives in-process protection.")
+        sbx_note = QLabel(sbx_msg)
+        sbx_note.setStyleSheet("color:#888;")
+        sbx_note.setWordWrap(True)
+        lay.addWidget(sbx_note)
+        self.sandbox_check.toggled.connect(lambda on: on and self.hardened_check.setChecked(True))
         return w
 
     def add_folder(self):
@@ -1000,6 +1122,16 @@ class Builder(QWidget):
         self.ctx_spin.setValue(int(m.get("ctx", 65536)))
         for key, cb in self.feature_boxes.items():
             cb.setChecked(bool(c.get("features", {}).get(key, True)))
+        pid = c.get("profile", "general")
+        pidx = self.profile_combo.findData(pid)
+        self.profile_combo.setCurrentIndex(pidx if pidx >= 0 else 0)
+        self._profile_desc_update()
+        sb = c.get("sandbox", {}) or {}
+        if getattr(self, "sandbox_check", None) is not None and self.sandbox_check.isEnabled():
+            self.sandbox_check.setChecked(bool(sb.get("enabled", False)))
+        if getattr(self, "network_combo", None) is not None:
+            nidx = self.network_combo.findData(sb.get("network", "off"))
+            self.network_combo.setCurrentIndex(nidx if nidx >= 0 else 0)
         self.name_edit.setText(c.get("name", "Golem"))
         self.persona_edit.setPlainText(c.get("personality", ""))
         self.folders_list.clear()

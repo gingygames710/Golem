@@ -19,11 +19,13 @@ actually runs.
 - [The three apps](#the-three-apps)
 - [How it works](#how-it-works)
 - [The Builder](#the-builder)
+- [Profiles](#profiles)
 - [Tools the agent has](#tools-the-agent-has)
 - [Choosing a model](#choosing-a-model)
 - [Personality](#personality)
 - [Limiting it to folders](#limiting-it-to-folders)
 - [Hardened Mode (for cautious users)](#hardened-mode-for-cautious-users)
+- [Sandbox Mode (a real wall)](#sandbox-mode-a-real-wall)
 - [Using it from your phone](#using-it-from-your-phone)
 - [Phone notifications](#phone-notifications)
 - [Running on a schedule](#running-on-a-schedule)
@@ -198,6 +200,32 @@ only **create, edit, move or delete** inside those folders — in every mode, in
 *read* files elsewhere. Leave the list empty to let it work anywhere (in normal chat it still asks before each
 change). Remember this is a speed bump, not a hard sandbox (see Safety).
 
+## Profiles
+
+The **Profile** tab sets Golem up for a job in one click. A profile fills in the other tabs — which
+abilities are on, sensible folder/protection defaults, a matching voice — and layers in its own
+**guardrails** that hold no matter what personality you pick. Pick one, review the tabs, Save.
+
+- **General** — everything on, no opinionated guardrails. The default, same as Golem has always been.
+- **Cybersecurity** — CTF, authorized pentest, malware/RE and forensics. Turns on shell, files, web and
+  local-network scan (pairs with the REA add-on), sandboxed by default, with a methodical "operate only on
+  what you're authorized to" personality.
+- **Shopping** — finds the best price across retailers with `compare_prices`, and helps you order — but
+  **never buys on its own**: it never enters card details and only places an order after you confirm the
+  exact item and total.
+- **Medical** — for clinicians: documentation, literature and admin. Local-first so patient data stays on
+  your machine; it's a documentation aid, **not** a diagnostic device, and it won't send identifiable data
+  out without your say-so.
+- **Teacher** — lesson planning, materials, rubrics and feedback. FERPA-minded with student data, and it
+  drafts parent/admin messages but never sends them.
+- **Student** — a tutor that explains, hints and quizzes. It teaches the method; it won't just do your
+  homework for you to hand in.
+- **Farmer** — field and crop planning, records, weather and market lookups. Local-first (works offline
+  except for lookups), and it defers to product labels, a vet or an agronomist on anything regulated.
+
+Profiles are just presets — you can change anything afterward, and the guardrails are additive on top of
+Golem's usual safety (permission prompts, folder limits, prompt-injection re-confirm).
+
 ## Hardened Mode (for cautious users)
 
 If running an AI agent on your PC makes you nervous, tick **Hardened Mode** on the Folders tab (or pass
@@ -216,8 +244,28 @@ have to find them one by one:
   address, e.g. `--host 100.x.y.z`.
 
 Leave it off to run wide-open — nothing changes, and normal chat still asks before every change. Hardened Mode is
-still a strong set of guardrails, not an OS-level sandbox (see Safety); true isolation is planned for a later
-version.
+a strong set of in-process guardrails; for an OS-enforced wall, turn on **Sandbox Mode** below.
+
+## Sandbox Mode (a real wall)
+
+Hardened Mode's confinement is enforced by Golem's own code, which runs *before* the shell — a determined
+command can still find ways around it (that's why the honest line has always been "speed bumps, not a
+sandbox"). **Sandbox Mode** is the real wall: tick it on the Folders tab (under Hardened), or pass
+`--sandbox`. It runs the agent's shell commands inside an **OS-enforced box where only your allowed folders
+exist** — so even if a command breaks out of the agent, it simply can't see the rest of your disk. Your
+`.ssh` keys, your `.env` files, your browser profile aren't "please don't"; they're *not there*.
+
+- It's **off by default** and needs a backend. In this build that's **Windows Sandbox** (turn on the
+  optional Windows feature: search *"Turn Windows features on or off"* → Windows Sandbox; needs Windows
+  Pro/Enterprise). If no backend is present, the toggle is greyed out and Golem stays on in-process Hardened
+  confinement — **it never pretends a wall exists when it doesn't.**
+- Ticking it also turns on **Hardened Mode** — the sandbox sits *on top of* the in-process guards, never
+  instead of them.
+- A **network** dropdown controls whether the box can reach the internet (Off by default).
+- `start_program` (a game or server with a window) still runs on the host, since it needs your real display;
+  it stays subject to the Hardened shell guard.
+
+A WSL backend is planned as a fallback for machines without Windows Sandbox.
 
 ## Using it from your phone
 
@@ -310,6 +358,8 @@ The Builder reads and writes `agent_config.json` next to the agent. You can also
 ```json
 {
   "name": "Golem",
+  "profile": "general",          // one-click preset: general | cybersecurity | shopping | medical |
+                                 //   teacher | student | farmer (fills the tabs + adds guardrails)
   "model": {
     "mode": "auto",              // "auto" | "local" | "claude"
     "local_model": "gemma4:12b", // used when mode = "local"
@@ -318,7 +368,7 @@ The Builder reads and writes `agent_config.json` next to the agent. You can also
     "ctx": 65536
   },
   "features": {                  // every ability is opt-in
-    "shell": true, "files": true, "web": true, "computer": true,
+    "shell": true, "files": true, "web": true, "shopping": true, "computer": true,
     "network_scan": false, "godot": true, "image_gen": true,
     "audio_gen": true, "speech": true, "notifications": true
   },
@@ -326,6 +376,9 @@ The Builder reads and writes `agent_config.json` next to the agent. You can also
   "folders": [],                 // if non-empty, writes/edits/deletes stay inside these
   "sticky_taint": false,         // stay extra-careful all session after reading untrusted content
   "hardened": false,             // Hardened Mode: confine reads + shell too, sticky taint, loopback-only serve
+  "sandbox": {                   // Sandbox Mode: run shell work in an OS box (needs Windows Sandbox); implies hardened
+    "enabled": false, "backend": "auto", "network": "off"   // network: off | loopback | on
+  },
   "check_updates": true,         // check GitHub for a newer release when the Builder opens
   "personality": ""              // written to personality.txt on launch
 }
