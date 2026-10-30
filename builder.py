@@ -482,6 +482,7 @@ class Builder(QWidget):
                 "voice": (self.voice_combo.currentText().strip() if getattr(self, "voice_combo", None) else "")
                          or "en_US-lessac-medium",
             },
+            "orb_autostart": self.orb_autostart_check.isChecked() if getattr(self, "orb_autostart_check", None) else False,
             "personality": self.persona_edit.toPlainText().strip(),
         }
 
@@ -1040,6 +1041,20 @@ class Builder(QWidget):
         self.launch_agent()
         self.flash("Easy Mode: launched a safe, friendly Golem in its own window.")
 
+    def launch_orb(self):
+        exe = AGENT_DIR / "Golem-Orb.exe"
+        try:
+            if exe.exists():
+                subprocess.Popen([str(exe)], cwd=str(AGENT_DIR))
+            else:
+                pyw = agent_python()
+                if pyw.endswith("python.exe") and os.path.exists(pyw[:-10] + "pythonw.exe"):
+                    pyw = pyw[:-10] + "pythonw.exe"
+                subprocess.Popen([pyw, str(AGENT_DIR / "orb.py")], cwd=str(AGENT_DIR))
+            self.flash("Launched the orb - look bottom-right; control it from the tray icon.")
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Could not launch the orb", str(e))
+
     def test_voice(self):
         if getattr(self, "voice_test_thread", None):
             return
@@ -1316,6 +1331,21 @@ class Builder(QWidget):
         vg.addWidget(vnote)
         lay.addWidget(voice_box)
 
+        orb_box = QGroupBox("Ambient orb")
+        og = QVBoxLayout(orb_box)
+        og.addWidget(QLabel("A floating ball of data that glows and pulses when Golem is active - "
+                            "click-through and always on top. Control it from the tray icon (themes, "
+                            "colours, move, quit)."))
+        orow = QHBoxLayout()
+        self.orb_launch_btn = QPushButton("Launch orb")
+        self.orb_launch_btn.clicked.connect(self.launch_orb)
+        orow.addWidget(self.orb_launch_btn)
+        self.orb_autostart_check = QCheckBox("Start it with the agent")
+        orow.addWidget(self.orb_autostart_check)
+        orow.addStretch(1)
+        og.addLayout(orow)
+        lay.addWidget(orb_box)
+
         upd_box = QGroupBox("Updates")
         ug = QVBoxLayout(upd_box)
         ug.addWidget(QLabel(f"You're running Golem {VERSION}."))
@@ -1443,6 +1473,8 @@ class Builder(QWidget):
             self.voice_check.setChecked(bool(vc.get("enabled", False)))
         if getattr(self, "voice_combo", None) is not None:
             self.voice_combo.setCurrentText(vc.get("voice", "en_US-lessac-medium"))
+        if getattr(self, "orb_autostart_check", None) is not None:
+            self.orb_autostart_check.setChecked(bool(c.get("orb_autostart", False)))
         if getattr(self, "ollama_install_edit", None) is not None:
             self.ollama_install_edit.setText(c.get("ollama_install_dir", "") or "")
         if getattr(self, "ollama_models_edit", None) is not None:

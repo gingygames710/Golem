@@ -3,11 +3,12 @@
 ; Compile with:  ISCC.exe golem.iss   ->  installer\Golem-setup-<version>.exe
 
 #define MyAppName "Golem"
-#define MyAppVersion "0.9.1"
+#define MyAppVersion "1.0.0"
 #define MyAppPublisher "Golem"
 #define BuilderExe "Golem-Builder.exe"
 #define AgentExe "Golem.exe"
 #define CoreExe "golem-core.exe"
+#define OrbExe "Golem-Orb.exe"
 
 [Setup]
 AppId={{B7E6F3A2-1C4D-4E8B-9A3F-2D5C6E7F8A90}
@@ -37,12 +38,14 @@ Name: "desktopicon"; Description: "Create a desktop shortcut for the Builder"; G
 Source: "dist\{#BuilderExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\{#AgentExe}";   DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\{#CoreExe}";    DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\{#OrbExe}";     DestDir: "{app}"; Flags: ignoreversion
 Source: "icon.ico";           DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md";          DestDir: "{app}"; Flags: ignoreversion isreadme
 
 [Icons]
 Name: "{group}\Golem Builder";        Filename: "{app}\{#BuilderExe}"
 Name: "{group}\Golem (chat)";         Filename: "{app}\{#AgentExe}"
+Name: "{group}\Golem Orb";            Filename: "{app}\{#OrbExe}"
 Name: "{group}\Uninstall Golem";      Filename: "{uninstallexe}"
 Name: "{autodesktop}\Golem";          Filename: "{app}\{#AgentExe}"; Tasks: desktopagent
 Name: "{autodesktop}\Golem Builder";  Filename: "{app}\{#BuilderExe}"; Tasks: desktopicon

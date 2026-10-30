@@ -332,6 +332,22 @@ class AgentWindow(QWidget):
         root.addWidget(self._composer())
 
         self.start_agent()
+        if _config().get("orb_autostart"):
+            self._launch_orb()
+
+    def _launch_orb(self):
+        """Start the ambient orb (the frozen exe if installed, else orb.py). Best-effort."""
+        try:
+            exe = AGENT_DIR / "Golem-Orb.exe"
+            if exe.exists():
+                subprocess.Popen([str(exe)], cwd=str(AGENT_DIR))
+            else:
+                py = agent_python()
+                if py.endswith("python.exe") and os.path.exists(py[:-10] + "pythonw.exe"):
+                    py = py[:-10] + "pythonw.exe"
+                subprocess.Popen([py, str(AGENT_DIR / "orb.py")], cwd=str(AGENT_DIR))
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------- appearance (0.8.0)
 
@@ -436,12 +452,25 @@ class AgentWindow(QWidget):
             self._speak_timer.start(800)   # busy speaking the previous reply; try again shortly
             return
         self._spoken_text = text
+        self._ping_orb(2.5)                 # a stronger, longer pulse while it's actually speaking
         self._voice_thread = VoicePlayer(text, self.voice_name)
         self._voice_thread.start()
 
     def _maybe_queue_speak(self):
+        self._ping_orb()                    # let the ambient orb (if running) pulse while Golem responds
         if self.speak_on:
             self._speak_timer.start(1100)   # debounce: speak once output settles for ~1.1s
+
+    def _ping_orb(self, seconds: float = 1.3):
+        """Tell the ambient orb Golem is active, via a tiny shared file. Throttled; best-effort."""
+        now = time.time()
+        if now - getattr(self, "_last_orb_ping", 0.0) < 0.4:
+            return
+        self._last_orb_ping = now
+        try:
+            (Path(tempfile.gettempdir()) / "golem_orb_signal").write_text(str(now + seconds))
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------- building blocks
 

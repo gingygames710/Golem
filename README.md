@@ -28,6 +28,7 @@ actually runs.
 - [Personality](#personality)
 - [Appearance](#appearance)
 - [Voice](#voice)
+- [The ambient orb](#the-ambient-orb)
 - [Limiting it to folders](#limiting-it-to-folders)
 - [Hardened Mode (for cautious users)](#hardened-mode-for-cautious-users)
 - [Sandbox Mode (a real wall)](#sandbox-mode-a-real-wall)
@@ -225,6 +226,23 @@ Golem can **read its replies out loud** using the same free local Piper voices a
 
 It all runs locally — nothing is sent anywhere. Only use voices you're allowed to; **cloning a voice from
 your own recording is a planned add-on.**
+
+## The ambient orb
+
+Golem's ambient presence: a floating **ball of data** — a glowing core with 1s and 0s orbiting it in
+3D — that sits on your desktop, always on top and **click-through** (your clicks pass right through it, so
+it never gets in the way). It **breathes** gently and **pulses when Golem is responding or speaking**.
+
+Launch it from the Builder's **Add-ons → Ambient orb → Launch orb** (or tick *Start it with the agent*),
+or run `Golem-Orb.exe`. Control it from its **tray icon**:
+
+- **Appearance…** — themes (**Twilight** default, plus Matrix, Ember, Ice, Void, Rose, **Ultron**), colour
+  pickers for the core, glow, digits and sparks, and sliders for size, data density, speed and opacity.
+  Changes preview live and save under `orb` in the config.
+- **Unlock to move** to drag it (it remembers where), **Hide/Show**, and **Quit**.
+
+It's built to be light — a small window and a cheap per-frame draw — so it runs smoothly even on modest
+hardware.
 
 ## Limiting it to folders
 
