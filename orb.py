@@ -44,6 +44,7 @@ DEFAULT_ORB = {
     "density": 120,       # how many digits orbit
     "speed": 70,          # rotation speed
     "opacity": 96,        # whole-orb opacity, 40-100
+    "follow": False,      # drift toward whatever window you're working in
     "x": -1, "y": -1,     # saved position (-1 = bottom-right on first run)
 }
 ORB_THEMES = {
@@ -130,6 +131,11 @@ class Orb(QWidget):
         self._sig_timer.timeout.connect(self._check_signal)
         self._sig_timer.start(90)          # poll often enough that the speech pulse starts in time with the voice
         QTimer.singleShot(500, lambda: self.pulse(2.2))   # a warm hello when the orb first appears
+        self.follow = bool(self.ap.get("follow", False))   # drift toward the window you're working in
+        self._follow_timer = QTimer(self)
+        self._follow_timer.timeout.connect(self._follow_tick)
+        if self.follow:
+            self._follow_timer.start(500)
 
     # ---- geometry ----
     def _win_half(self) -> int:
@@ -201,6 +207,8 @@ class Orb(QWidget):
         m = QMenu()
         talk = QAction("Talk to Golem", m)
         talk.triggered.connect(self._request_talk)
+        follow = QAction(("Stop following windows" if self.follow else "Follow my windows"), m)
+        follow.triggered.connect(self._toggle_follow)
         lock = QAction("Lock in place" if not self.locked else "Unlock to move", m)
         lock.triggered.connect(lambda: self.set_locked(not self.locked))
         appr = QAction("Appearance...", m)
@@ -210,6 +218,7 @@ class Orb(QWidget):
         quit_a = QAction("Quit", m)
         quit_a.triggered.connect(QApplication.quit)
         m.addAction(talk)
+        m.addAction(follow)
         m.addSeparator()
         m.addAction(lock)
         m.addAction(appr)
@@ -225,6 +234,47 @@ class Orb(QWidget):
             self.pulse(1.0)
         except Exception:
             pass
+
+    def _toggle_follow(self):
+        self.follow = not self.follow
+        self.ap["follow"] = self.follow
+        save_orb(self.ap)
+        if self.follow:
+            self._follow_timer.start(500)
+            self.pulse(1.2)
+        else:
+            self._follow_timer.stop()
+
+    def _follow_tick(self):
+        """Gently drift the orb toward the top-right of whatever window is in front (Windows only)."""
+        if not self.follow or not IS_WINDOWS:
+            return
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            hwnd = u.GetForegroundWindow()
+            if not hwnd or int(hwnd) == int(self.winId()):
+                return
+
+            class _R(ctypes.Structure):
+                _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
+                            ("r", ctypes.c_long), ("b", ctypes.c_long)]
+            rect = _R()
+            if not u.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return
+            half = self._win_half()
+            # aim the orb's centre just inside the active window's top-right corner
+            tcx, tcy = rect.r - 36, rect.t + 70
+            tx, ty = tcx - half, tcy - half
+        except Exception:
+            return
+        scr = QApplication.primaryScreen().availableGeometry()
+        tx = max(scr.left(), min(int(tx), scr.right() - self.width()))
+        ty = max(scr.top(), min(int(ty), scr.bottom() - self.height()))
+        nx = self.x() + (tx - self.x()) * 0.15   # smooth glide, not a jump
+        ny = self.y() + (ty - self.y()) * 0.15
+        if abs(nx - self.x()) > 0.5 or abs(ny - self.y()) > 0.5:
+            self.move(int(nx), int(ny))
 
     # ---- activity ----
     def pulse(self, seconds: float = 1.0):
@@ -556,6 +606,11 @@ def main():
     tray = QSystemTrayIcon(QIcon(str(ICON)) if ICON.exists() else QIcon(), app)
     tray.setToolTip("Golem Orb")
     menu = QMenu()
+    a_talk = QAction("Talk to Golem")
+    a_talk.triggered.connect(orb._request_talk)
+    a_follow = QAction("Stop following windows" if orb.follow else "Follow my windows")
+    a_follow.triggered.connect(lambda: (orb._toggle_follow(),
+                                        a_follow.setText("Stop following windows" if orb.follow else "Follow my windows")))
     a_appr = QAction("Appearance...")
     a_appr.triggered.connect(orb.open_appearance)
     a_lock = QAction("Unlock to move")
@@ -565,6 +620,9 @@ def main():
     a_hide.triggered.connect(lambda: orb.setVisible(not orb.isVisible()))
     a_quit = QAction("Quit")
     a_quit.triggered.connect(app.quit)
+    menu.addAction(a_talk)
+    menu.addAction(a_follow)
+    menu.addSeparator()
     for a in (a_appr, a_lock, a_hide):
         menu.addAction(a)
     menu.addSeparator()

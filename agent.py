@@ -1609,6 +1609,7 @@ def default_config() -> dict:
         "voice": {"enabled": True, "voice": "en_US-hfc_female-medium", "wake": False},  # speak aloud; wake = "Hey Golem"
         "orb_autostart": True,      # the ambient orb is standard - launches with the agent window
         "first_run": True,          # cleared after the first welcome, so the greeting only happens once
+        "routines": [],             # saved quick tasks: [{"name","prompt","at_launch"}] - buttons in the chat window
         "personality": "",
     }
 

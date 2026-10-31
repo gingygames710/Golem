@@ -515,6 +515,7 @@ class AgentWindow(QWidget):
         self._apply_bg_backdrop()   # paint the custom background image behind the chat, if one is set
 
         root.addWidget(self._permission_bar())
+        root.addWidget(self._routines_bar())
         root.addWidget(self._composer())
 
         self.start_agent()
@@ -524,6 +525,9 @@ class AgentWindow(QWidget):
             QTimer.singleShot(1500, self._start_wake)
         if _config().get("first_run", False):       # a warm spoken hello the very first time
             QTimer.singleShot(1400, self._first_run_greeting)
+        _launch = [r for r in (_config().get("routines") or []) if r.get("at_launch")]
+        if _launch:                                  # run any "run when Golem starts" routines
+            QTimer.singleShot(2600, lambda: self._run_launch_routines(_launch))
 
     def _launch_orb(self):
         """Start the ambient orb (the frozen exe if installed, else orb.py). Best-effort."""
@@ -1027,6 +1031,9 @@ class AgentWindow(QWidget):
         self.shot_btn = self._icon_button("🖼", "Send a screenshot")
         self.shot_btn.clicked.connect(self.attach_screenshot)
         h.addWidget(self.shot_btn)
+        self.look_btn = self._icon_button("👁", "Look at my screen - Golem sees it and tells you what's there")
+        self.look_btn.clicked.connect(self.look_at_screen)
+        h.addWidget(self.look_btn)
 
         self.entry = QLineEdit()
         self.entry.setPlaceholderText(f"Message {self.name}...")
@@ -1248,6 +1255,83 @@ class AgentWindow(QWidget):
             self.showNormal()
             self.raise_()
             self.activateWindow()
+
+    def _routines_bar(self) -> QWidget:
+        """A row of one-click buttons for the user's saved routines (quick tasks), above the composer."""
+        self._routines_wrap = QWidget()
+        self._routines_lay = QHBoxLayout(self._routines_wrap)
+        self._routines_lay.setContentsMargins(16, 0, 16, 0)
+        self._routines_lay.setSpacing(6)
+        self._build_routine_buttons()
+        return self._routines_wrap
+
+    def _build_routine_buttons(self):
+        lay = self._routines_lay
+        while lay.count():
+            it = lay.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        routines = _config().get("routines") or []
+        if not routines:
+            self._routines_wrap.setVisible(False)
+            return
+        self._routines_wrap.setVisible(True)
+        lbl = QLabel("Quick:")
+        lbl.setStyleSheet(f"color:{MUTED}; font-size:12px;")
+        lay.addWidget(lbl)
+        for r in routines[:8]:
+            name = ((r.get("name") or "").strip() or "Task")[:24]
+            b = QPushButton(name)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet("QPushButton { background:#1b1f27; color:#c7ccda; border:1px solid #2a2f3a; "
+                            "border-radius:12px; padding:5px 12px; } QPushButton:hover { background:#232834; }")
+            b.clicked.connect(lambda _=False, pr=(r.get("prompt") or ""): self._run_routine(pr))
+            lay.addWidget(b)
+        lay.addStretch(1)
+
+    def _run_routine(self, prompt: str):
+        prompt = (prompt or "").strip()
+        if not self._running():
+            self._bubble("The agent isn't running - click Restart.", "system")
+            return
+        if not prompt:
+            return
+        self.entry.setText(prompt)
+        self.send()
+
+    def _run_launch_routines(self, routines: list):
+        if not routines or not self._running():
+            return
+        self._run_routine(routines[0].get("prompt") or "")
+        rest = routines[1:]
+        if rest:
+            QTimer.singleShot(5000, lambda: self._run_launch_routines(rest))
+
+    def look_at_screen(self):
+        """One tap: grab the screen and immediately ask Golem what's there (screen awareness)."""
+        if not self._running():
+            self._bubble("The agent isn't running - click Restart.", "system")
+            return
+        self.showMinimized()
+        QTimer.singleShot(350, self._grab_and_ask)
+
+    def _grab_and_ask(self):
+        try:
+            pix = QApplication.primaryScreen().grabWindow(0)
+            out = Path(tempfile.gettempdir()) / f"golem-shot-{int(time.time())}.png"
+            pix.save(str(out), "PNG")
+            self._stage(str(out))
+            staged = True
+        except Exception as e:  # noqa: BLE001
+            self._bubble(f"Could not see the screen: {e}", "system")
+            staged = False
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        if staged:
+            self.entry.setText("What's on my screen right now? Describe it briefly and point out anything "
+                               "useful I could do.")
+            self.send()
 
     def _stage(self, path: str):
         self.pending.append(path)

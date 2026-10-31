@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QRadioButton, QButtonGroup, QComboBox,
     QPlainTextEdit, QSpinBox, QGroupBox, QTabWidget, QMessageBox, QFrame,
-    QListWidget, QFileDialog,
+    QListWidget, QFileDialog, QInputDialog,
 )
 
 # When frozen into an .exe (PyInstaller), __file__ points into a temp extract folder, so use the
@@ -407,6 +407,7 @@ class Builder(QWidget):
         self._easy_pending_ollama = False  # Easy Mode: continue once Ollama finishes installing
         self.voice_test_thread = None      # running voice download/test
         self.stt_thread = None             # running speech-to-text install
+        self._routines = []                # saved quick-task routines
         self._rec = None  # the latest GPU model recommendation
         self.cfg = self.load_config()
 
@@ -534,6 +535,7 @@ class Builder(QWidget):
                 "wake": self.stt_wake_check.isChecked() if getattr(self, "stt_wake_check", None) else False,
             },
             "orb_autostart": self.orb_autostart_check.isChecked() if getattr(self, "orb_autostart_check", None) else False,
+            "routines": list(self._routines),
             "personality": self.persona_edit.toPlainText().strip(),
         }
 
@@ -1202,6 +1204,39 @@ class Builder(QWidget):
         self.stt_thread = None
         self._refresh_addon_status()
 
+    # ---------------------------------------------------------------- routines (quick tasks)
+
+    def _refresh_routines_list(self):
+        if getattr(self, "routines_list", None) is None:
+            return
+        self.routines_list.clear()
+        for r in self._routines:
+            tag = "   ⏻ runs at launch" if r.get("at_launch") else ""
+            self.routines_list.addItem(f"{r.get('name', 'Task')}{tag}")
+
+    def add_routine(self):
+        name, ok = QInputDialog.getText(self, "New routine", "Button name (short):")
+        if not ok or not name.strip():
+            return
+        prompt, ok = QInputDialog.getMultiLineText(
+            self, "New routine", f"What should Golem do when you click “{name.strip()}”?")
+        if not ok or not prompt.strip():
+            return
+        self._routines.append({"name": name.strip()[:24], "prompt": prompt.strip(), "at_launch": False})
+        self._refresh_routines_list()
+
+    def remove_routine(self):
+        i = self.routines_list.currentRow()
+        if 0 <= i < len(self._routines):
+            del self._routines[i]
+            self._refresh_routines_list()
+
+    def toggle_routine_launch(self):
+        i = self.routines_list.currentRow()
+        if 0 <= i < len(self._routines):
+            self._routines[i]["at_launch"] = not self._routines[i].get("at_launch", False)
+            self._refresh_routines_list()
+
     def apply_profile(self, pid: str):
         prof = PROFILES.get(pid, {})
         feats = prof.get("features") or {}
@@ -1513,6 +1548,27 @@ class Builder(QWidget):
         og.addLayout(orow)
         lay.addWidget(orb_box)
 
+        routines_box = QGroupBox("Routines - one-click tasks")
+        rtg = QVBoxLayout(routines_box)
+        rtg.addWidget(QLabel("Save tasks you do often. Each becomes a button in the chat window - click it "
+                             "and Golem runs that request. Tick a routine to also run it when Golem starts."))
+        self.routines_list = QListWidget()
+        self.routines_list.setMaximumHeight(120)
+        rtg.addWidget(self.routines_list)
+        rtrow = QHBoxLayout()
+        add_rt = QPushButton("Add routine")
+        add_rt.clicked.connect(self.add_routine)
+        del_rt = QPushButton("Remove selected")
+        del_rt.clicked.connect(self.remove_routine)
+        launch_rt = QPushButton("Toggle 'run at launch'")
+        launch_rt.clicked.connect(self.toggle_routine_launch)
+        rtrow.addWidget(add_rt)
+        rtrow.addWidget(del_rt)
+        rtrow.addWidget(launch_rt)
+        rtrow.addStretch(1)
+        rtg.addLayout(rtrow)
+        lay.addWidget(routines_box)
+
         upd_box = QGroupBox("Updates")
         ug = QVBoxLayout(upd_box)
         ug.addWidget(QLabel(f"You're running Golem {VERSION}."))
@@ -1651,6 +1707,8 @@ class Builder(QWidget):
             self.voice_combo.setCurrentText(vc.get("voice", "en_US-hfc_female-medium"))
         if getattr(self, "stt_wake_check", None) is not None:
             self.stt_wake_check.setChecked(bool(vc.get("wake", False)))
+        self._routines = list(c.get("routines") or [])
+        self._refresh_routines_list()
         if getattr(self, "orb_autostart_check", None) is not None:
             self.orb_autostart_check.setChecked(bool(c.get("orb_autostart", True)))
         if getattr(self, "ollama_install_edit", None) is not None:
