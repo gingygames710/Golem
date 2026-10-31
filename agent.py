@@ -327,6 +327,41 @@ def recall() -> str:
     return "I don't have anything saved yet." if not mem else "Here's what I remember:\n- " + "\n- ".join(mem)
 
 
+# ---------------------------------------------------------------- workspace / "get me ready for..." (1.6.0)
+#
+# Lets Golem set up a workspace on command - launch the apps and open the pages/files the user needs for a
+# task ("get me ready for a cyber-security lab", "set me up to write"). The model chains these with its own
+# knowledge; this is the on-Windows seed of the Sovereign-OS provisioning idea.
+def open_app(name: str) -> str:
+    """Launch a program or app by name or path (e.g. 'notepad', 'code', 'wireshark', or a full path)."""
+    name = (name or "").strip()
+    if not name:
+        return "No app name given."
+    try:
+        if IS_WINDOWS:
+            subprocess.Popen(["cmd", "/c", "start", "", name], creationflags=CREATE_NO_WINDOW)
+        else:
+            subprocess.Popen([name])
+        return f"Launched {name} (if it's installed)."
+    except Exception as e:  # noqa: BLE001
+        return f"Couldn't launch {name}: {e}"
+
+
+def open_url(url: str) -> str:
+    """Open a web page in the user's default browser."""
+    url = (url or "").strip()
+    if not url:
+        return "No URL given."
+    if not re.match(r"^[a-zA-Z]+://", url):
+        url = "https://" + url
+    try:
+        import webbrowser
+        webbrowser.open(url)
+        return f"Opened {url}."
+    except Exception as e:  # noqa: BLE001
+        return f"Couldn't open {url}: {e}"
+
+
 # ---------------------------------------------------------------- tools
 
 def _resolve(path: str) -> Path:
@@ -361,14 +396,54 @@ def _check_readable(p: Path):
 
 def _snapshot(p: Path):
     """Save a copy of an existing file before it is overwritten or edited, so the change can be undone.
-    Best effort - a backup problem never blocks the actual operation. Undo copies live in BACKUP_DIR."""
+    Best effort - a backup problem never blocks the actual operation. Undo copies live in BACKUP_DIR,
+    with an index.json mapping each backup to its original path + time so the UI can restore it exactly."""
     try:
         if p.exists() and p.is_file():
             BACKUP_DIR.mkdir(exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-            shutil.copy2(p, BACKUP_DIR / f"{p.name}.{stamp}.bak")
+            bak = f"{p.name}.{stamp}.bak"
+            shutil.copy2(p, BACKUP_DIR / bak)
+            idx = BACKUP_DIR / "index.json"
+            try:
+                entries = json.loads(idx.read_text(encoding="utf-8")) if idx.exists() else []
+            except Exception:  # noqa: BLE001
+                entries = []
+            entries.append({"backup": bak, "path": str(p), "time": datetime.now().isoformat(timespec="seconds")})
+            idx.write_text(json.dumps(entries[-200:], indent=2), encoding="utf-8")
     except Exception:  # noqa: BLE001 - never let a backup failure stop the user's work
         pass
+
+
+def recent_changes(limit: int = 30) -> list:
+    """Recent file changes Golem made, newest first: [{backup, path, time}] - for the Undo panel."""
+    try:
+        entries = json.loads((BACKUP_DIR / "index.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    out = [e for e in entries if (BACKUP_DIR / e.get("backup", "")).exists()]
+    return list(reversed(out))[:limit]
+
+
+def undo_change(backup: str) -> str:
+    """Restore a single backup to its original path (one-click undo)."""
+    try:
+        entries = json.loads((BACKUP_DIR / "index.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return "Couldn't read the change history."
+    match = next((e for e in entries if e.get("backup") == backup), None)
+    if not match:
+        return "That change isn't in the history any more."
+    src = BACKUP_DIR / backup
+    if not src.exists():
+        return "The backup file is gone, so I can't undo that one."
+    try:
+        dst = Path(match["path"])
+        _snapshot(dst)   # snapshot the current state too, so undo is itself undoable
+        shutil.copy2(src, dst)
+        return f"Restored {dst.name} to how it was at {match.get('time', '')}."
+    except Exception as e:  # noqa: BLE001
+        return f"Couldn't restore that file: {e}"
 
 
 STICKY_TAINT = False  # config "sticky_taint": once untrusted content is read, keep re-confirming all session
@@ -1417,6 +1492,13 @@ TOOLS = {
         {"fact": S}, ["fact"], False)),
     "recall": (recall, _tool(
         "recall", "List what you've saved about the user in memory.", {}, [], False)),
+    "open_app": (open_app, _tool(
+        "open_app", "Launch a program or app on the user's PC by name or path, to set up a workspace "
+        "(e.g. 'get me ready for X' - open the tools they'll need). Asks permission first.",
+        {"name": S}, ["name"], True)),
+    "open_url": (open_url, _tool(
+        "open_url", "Open a web page in the user's default browser (part of setting up a workspace).",
+        {"url": S}, ["url"], True)),
 }
 COMPUTER_TOOLS = {
     "screenshot": (screenshot, _tool(
@@ -1451,6 +1533,7 @@ FEATURE_TOOLS = {
     "audio_gen":     ["generate_audio"],
     "speech":        ["generate_speech"],
     "notifications": ["send_notification"],
+    "workspace":     ["open_app", "open_url"],
 }
 
 

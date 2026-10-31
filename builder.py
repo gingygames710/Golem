@@ -68,6 +68,7 @@ FEATURES = [
     ("audio_gen",     "Generate music / SFX",          "Local MusicGen - music and sound effects. Needs gen/ setup."),
     ("speech",        "Text to speech",                "Local Piper voice. Needs gen/ setup."),
     ("notifications", "Notify my phone",               "Push via ntfy when a job finishes or it gets stuck."),
+    ("workspace",     "Set up my workspace",           "Open apps and pages on command - “get me ready for X”."),
 ]
 
 # A few known-good models to offer in the 'pull' box. The user can type any Ollama tag.

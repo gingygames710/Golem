@@ -981,6 +981,14 @@ class AgentWindow(QWidget):
                                     "border-radius:8px; padding:6px 12px;")
         self.stop_btn.clicked.connect(self.stop)
         h.addWidget(self.stop_btn)
+        self.undo_btn = QPushButton("↶ Undo")
+        self.undo_btn.setCursor(Qt.PointingHandCursor)
+        self.undo_btn.setToolTip("See the files Golem changed and put any of them back")
+        self.undo_btn.setStyleSheet(
+            f"color:{MUTED}; background:transparent; border:1px solid #2a2f3a; "
+            "border-radius:8px; padding:6px 12px;")
+        self.undo_btn.clicked.connect(self._open_undo)
+        h.addWidget(self.undo_btn)
         self.restart_btn = QPushButton("Restart")
         self.restart_btn.setCursor(Qt.PointingHandCursor)
         self.restart_btn.setStyleSheet(
@@ -989,6 +997,56 @@ class AgentWindow(QWidget):
         self.restart_btn.clicked.connect(self.restart)
         h.addWidget(self.restart_btn)
         return bar
+
+    def _open_undo(self):
+        """Trust & undo: list the files Golem changed and let the user restore any one."""
+        try:
+            import agent
+            changes = agent.recent_changes(40)
+        except Exception:   # noqa: BLE001
+            changes = []
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Recent changes - undo")
+        v = QVBoxLayout(dlg)
+        if not changes:
+            v.addWidget(QLabel("Golem hasn't changed any files yet. When it does, they'll show here and "
+                               "you can put any of them back with one click."))
+        else:
+            v.addWidget(QLabel("Files Golem changed, newest first. Undo restores the file to how it was "
+                               "just before that change."))
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            holder = QWidget()
+            hv = QVBoxLayout(holder)
+            for c in changes:
+                row = QHBoxLayout()
+                lbl = QLabel(f"{Path(c['path']).name}   ·   {c.get('time', '')}")
+                lbl.setToolTip(c['path'])
+                btn = QPushButton("Undo")
+                btn.setCursor(Qt.PointingHandCursor)
+                btn.clicked.connect(lambda _=False, b=c['backup'], w=dlg: self._do_undo(b, w))
+                row.addWidget(lbl, 1)
+                row.addWidget(btn)
+                rw = QWidget()
+                rw.setLayout(row)
+                hv.addWidget(rw)
+            hv.addStretch(1)
+            scroll.setWidget(holder)
+            scroll.setMinimumSize(480, 320)
+            v.addWidget(scroll)
+        close = QPushButton("Close")
+        close.clicked.connect(dlg.accept)
+        v.addWidget(close)
+        dlg.exec()
+
+    def _do_undo(self, backup: str, dlg):
+        try:
+            import agent
+            msg = agent.undo_change(backup)
+        except Exception as e:   # noqa: BLE001
+            msg = f"Couldn't undo: {e}"
+        self._bubble(msg, "system")
+        dlg.accept()
 
     def _permission_bar(self) -> QWidget:
         self.perm_bar = QFrame()

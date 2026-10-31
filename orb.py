@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QPointF
-from PySide6.QtGui import (QColor, QFont, QIcon, QPainter, QPixmap, QRadialGradient, QPen, QAction)
+from PySide6.QtGui import (QColor, QFont, QIcon, QPainter, QPixmap, QRadialGradient, QPen, QAction, QCursor)
 from PySide6.QtWidgets import (QApplication, QWidget, QSystemTrayIcon, QMenu, QDialog, QVBoxLayout,
                                QHBoxLayout, QGridLayout, QLabel, QPushButton, QSlider, QColorDialog)
 
@@ -45,6 +45,7 @@ DEFAULT_ORB = {
     "speed": 70,          # rotation speed
     "opacity": 96,        # whole-orb opacity, 40-100
     "follow": False,      # drift toward whatever window you're working in
+    "face": False,        # the avatar awakens: two eyes of light that look at you and blink
     "x": -1, "y": -1,     # saved position (-1 = bottom-right on first run)
 }
 ORB_THEMES = {
@@ -131,6 +132,7 @@ class Orb(QWidget):
         self._sig_timer.timeout.connect(self._check_signal)
         self._sig_timer.start(90)          # poll often enough that the speech pulse starts in time with the voice
         QTimer.singleShot(500, lambda: self.pulse(2.2))   # a warm hello when the orb first appears
+        self.face = bool(self.ap.get("face", False))       # the avatar: eyes of light that look at you
         self.follow = bool(self.ap.get("follow", False))   # drift toward the window you're working in
         self._follow_timer = QTimer(self)
         self._follow_timer.timeout.connect(self._follow_tick)
@@ -209,6 +211,8 @@ class Orb(QWidget):
         talk.triggered.connect(self._request_talk)
         follow = QAction(("Stop following windows" if self.follow else "Follow my windows"), m)
         follow.triggered.connect(self._toggle_follow)
+        face = QAction(("Hide face" if self.face else "Show face"), m)
+        face.triggered.connect(self._toggle_face)
         lock = QAction("Lock in place" if not self.locked else "Unlock to move", m)
         lock.triggered.connect(lambda: self.set_locked(not self.locked))
         appr = QAction("Appearance...", m)
@@ -219,6 +223,7 @@ class Orb(QWidget):
         quit_a.triggered.connect(QApplication.quit)
         m.addAction(talk)
         m.addAction(follow)
+        m.addAction(face)
         m.addSeparator()
         m.addAction(lock)
         m.addAction(appr)
@@ -234,6 +239,12 @@ class Orb(QWidget):
             self.pulse(1.0)
         except Exception:
             pass
+
+    def _toggle_face(self):
+        self.face = not self.face
+        self.ap["face"] = self.face
+        save_orb(self.ap)
+        self.pulse(1.2)
 
     def _toggle_follow(self):
         self.follow = not self.follow
@@ -481,7 +492,38 @@ class Orb(QWidget):
             p.setBrush(Qt.NoBrush)
             p.drawEllipse(QPointF(cx, cy), ring, ring)
         draw_digits(front=True)           # digits in front of the core
+        if self.face:                     # the avatar: two eyes of light that look at you and blink
+            self._draw_face(p, cx, cy, t, active)
         p.end()
+
+    def _draw_face(self, p, cx, cy, t, active):
+        sz = self.ap["size"]
+        ex, ey = sz * 0.42, sz * 0.22     # eye offset from centre
+        er = sz * 0.2                     # eye radius
+        blink = (t % 4.3)
+        open_h = 0.12 if blink < 0.13 else 1.0   # a quick blink every ~4s
+        # look toward the mouse
+        try:
+            g = QCursor.pos()
+            dx, dy = (g.x() - self.x()) - cx, (g.y() - self.y()) - cy
+            d = max(1.0, math.hypot(dx, dy))
+            lookx, looky = dx / d * er * 0.45, dy / d * er * 0.45
+        except Exception:
+            lookx = looky = 0.0
+        core = QColor(self.ap["core"])
+        pupil = QColor(self.ap["glow"])
+        for side in (-1, 1):
+            cxr, cyr = cx + side * ex, cy - ey
+            p.setPen(Qt.NoPen)
+            socket = QColor(10, 12, 20, 180)        # a dark socket so the eye reads against the glow
+            p.setBrush(socket)
+            p.drawEllipse(QPointF(cxr, cyr), er, er * open_h)
+            if open_h > 0.3:                        # pupil only while the eye is open
+                p.setBrush(QColor(core.red(), core.green(), core.blue(), 235))
+                p.drawEllipse(QPointF(cxr + lookx, cyr + looky), er * 0.52, er * 0.52)
+                p.setBrush(QColor(pupil.red(), pupil.green(), pupil.blue(), 255))
+                p.drawEllipse(QPointF(cxr + lookx, cyr + looky), er * 0.24, er * 0.24)
+        p.setBrush(Qt.NoBrush)
 
 
 class OrbAppearanceDialog(QDialog):
@@ -611,6 +653,9 @@ def main():
     a_follow = QAction("Stop following windows" if orb.follow else "Follow my windows")
     a_follow.triggered.connect(lambda: (orb._toggle_follow(),
                                         a_follow.setText("Stop following windows" if orb.follow else "Follow my windows")))
+    a_face = QAction("Hide face" if orb.face else "Show face")
+    a_face.triggered.connect(lambda: (orb._toggle_face(),
+                                      a_face.setText("Hide face" if orb.face else "Show face")))
     a_appr = QAction("Appearance...")
     a_appr.triggered.connect(orb.open_appearance)
     a_lock = QAction("Unlock to move")
@@ -622,6 +667,7 @@ def main():
     a_quit.triggered.connect(app.quit)
     menu.addAction(a_talk)
     menu.addAction(a_follow)
+    menu.addAction(a_face)
     menu.addSeparator()
     for a in (a_appr, a_lock, a_hide):
         menu.addAction(a)
