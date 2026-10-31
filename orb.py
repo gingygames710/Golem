@@ -104,6 +104,7 @@ class Orb(QWidget):
         self._speak_start = 0.0            # monotonic time the voice began
         self._speak_interval = 0.06        # seconds per envelope bucket
         self._speak_until = 0.0            # monotonic time the voice ends - orb pulses with light until then
+        self._listen_until = 0.0           # monotonic time Golem stops listening - orb shows a cool ring
         self._glow = None                  # cached glow pixmap
         self._glow_key = None
         self._fonts = {}                   # size -> QFont cache, so we don't rebuild fonts each frame
@@ -239,9 +240,17 @@ class Orb(QWidget):
         if remaining > 0:
             self._active_until = max(self._active_until, mono_now + min(remaining, 3.0))
         for ln in lines[1:]:
+            parts = ln.split()
+            if ln.startswith("LISTEN "):           # Golem is hearing you - show a distinct cool ring
+                try:
+                    rem = float(parts[1]) - wall_now
+                except (IndexError, ValueError):
+                    continue
+                if rem > 0:
+                    self._listen_until = max(self._listen_until, mono_now + min(rem, 2.0))
+                continue
             if not ln.startswith("SPEAK "):
                 continue
-            parts = ln.split()
             try:
                 start_epoch = float(parts[1])
                 interval = float(parts[2])
@@ -330,7 +339,9 @@ class Orb(QWidget):
         R = self.ap["size"] * 1.7
         amp = self._speak_amp(now)          # 0..1 loudness of the voice right now (pulses of light)
         speaking = now < self._speak_until
-        active = now < self._active_until or speaking
+        listening = now < self._listen_until and not speaking   # hearing you (speaking wins if both)
+        active = now < self._active_until or speaking or listening
+        self.timer.setInterval(16 if active else 40)   # 60fps when alive, 25fps idle - easy on weak PCs
 
         # gentle breathing; a little bigger/faster when active, and a sharp swell on each loud syllable
         breathe = 1.0 + (0.10 if active else 0.055) * math.sin(t * (2.6 if active else 1.7)) + 0.26 * amp
@@ -393,6 +404,14 @@ class Orb(QWidget):
             p.drawPixmap(QPointF(cx - bloom / 2, cy - bloom / 2),
                          gp.scaled(int(bloom), int(bloom), Qt.KeepAspectRatio, Qt.SmoothTransformation))
             p.setOpacity(1.0)
+        if listening:                     # a distinct cool ring while Golem is hearing you (not a mouth)
+            ring = self.ap["size"] * 2.35
+            puls = 0.5 + 0.5 * math.sin(t * 4.2)
+            pen = QPen(QColor(150, 220, 255, int(60 + 150 * puls)))
+            pen.setWidthF(3.0)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPointF(cx, cy), ring, ring)
         draw_digits(front=True)           # digits in front of the core
         p.end()
 

@@ -34,6 +34,12 @@ try:   # mic capture for talk-to-Golem (1.1.0); absent on a stripped build -> th
 except Exception:   # noqa: BLE001
     HAVE_MIC = False
 
+# Hands-free voice: when to treat the mic as speech vs silence (RMS of 16-bit samples, 0..32768).
+VAD_START_RMS = 450      # above this = you're talking
+VAD_STOP_RMS = 250       # below this = quiet
+VAD_SILENCE_MS = 1200    # end the turn after this much trailing quiet (once you've spoken)
+VAD_MAX_MS = 15000       # hard cap on one listening turn, so it can't listen forever
+
 # Same control-line protocol the core (agent.py) parses to attach an image/file to the next message.
 ATTACH_PREFIX = "\x1dGOLEM_ATTACH\x1d"
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -354,6 +360,7 @@ class MicRecorder:
         self._src = None
         self._io = None
         self._buf = bytearray()
+        self._level = 0.0
 
     def start(self) -> bool:
         if not HAVE_MIC:
@@ -380,9 +387,26 @@ class MicRecorder:
 
     def _on_ready(self):
         try:
-            self._buf += bytes(self._io.readAll())
+            data = bytes(self._io.readAll())
+        except Exception:   # noqa: BLE001
+            return
+        if not data:
+            return
+        self._buf += data
+        try:   # track loudness (RMS) of the latest chunk, for silence detection
+            import array
+            s = array.array("h")
+            s.frombytes(data[: len(data) // 2 * 2])
+            if s:
+                self._level = (sum(v * v for v in s) / len(s)) ** 0.5
         except Exception:   # noqa: BLE001
             pass
+
+    def level(self) -> float:
+        return self._level
+
+    def is_recording(self) -> bool:
+        return self._src is not None
 
     def stop(self) -> bytes:
         try:
@@ -393,6 +417,7 @@ class MicRecorder:
         data = bytes(self._buf)
         self._src = self._io = None
         self._buf = bytearray()
+        self._level = 0.0
         return data
 
 
@@ -445,8 +470,16 @@ class AgentWindow(QWidget):
         self._speak_timer.timeout.connect(self._speak_current)
         self._mic = MicRecorder()          # talk-to-Golem: record the mic, whisper transcribes it
         self._transcribe = None
-        self._listen_timer = QTimer(self)   # keeps the orb pulsing while Golem is listening
-        self._listen_timer.timeout.connect(lambda: self._ping_orb(0.6))
+        self._convo = False                # hands-free conversation mode (mic button on)
+        self._convo_empty = 0              # consecutive silent/empty turns, so noise can't loop forever
+        self._heard_speech = False
+        self._silence_since = 0.0
+        self._rec_start = 0.0
+        self._last_chunk_time = 0.0        # when the agent last produced output (to know it's still replying)
+        self._vad_timer = QTimer(self)     # watches mic level to end a turn when you stop talking
+        self._vad_timer.timeout.connect(self._vad_tick)
+        self._convo_timer = QTimer(self)   # re-opens the mic for the next turn once Golem is idle
+        self._convo_timer.timeout.connect(self._convo_poll)
 
         self.proc = None
         self.reader = None
@@ -590,6 +623,8 @@ class AgentWindow(QWidget):
     # ---------------------------------------------------------------- talk to Golem (1.1.0, speech to text)
 
     def _toggle_listen(self, on: bool):
+        """The mic button turns a hands-free CONVERSATION on/off: Golem listens, you speak, it detects
+        when you stop, transcribes, answers (aloud), and listens again - until you click the mic off."""
         if on:
             try:
                 import agent
@@ -601,45 +636,137 @@ class AgentWindow(QWidget):
                 self._bubble("To talk to Golem, open the Golem Builder, go to the Add-ons tab, and click "
                              "Install under 'Talk to Golem' (a one-time download).", "system")
                 return
-            if not self._mic.start():
+            if not self._running():
                 self.listen_btn.setChecked(False)
-                self._bubble("Couldn't open the microphone. Check that one is plugged in and that Windows "
-                             "lets apps use it (Settings - Privacy - Microphone).", "system")
+                self._bubble("Start the agent first - click Restart.", "system")
                 return
-            self.listen_btn.setText("●")
-            self.listen_btn.setToolTip("Listening... click to send")
-            self._ping_orb(0.6)
-            self._listen_timer.start(400)
+            self._convo = True
+            self._convo_empty = 0
+            if not self.speak_on:               # a voice conversation needs voice coming back
+                self.speak_btn.setChecked(True)   # fires _toggle_speak(True)
+            self._convo_timer.start(400)
+            self._start_listen_turn()
         else:
-            self._listen_timer.stop()
-            self.listen_btn.setText("🎤")
-            self.listen_btn.setToolTip("Talk to Golem - click to start, click again to send")
-            pcm = self._mic.stop()
-            if len(pcm) < int(16000 * 2 * 0.3):   # under ~0.3s captured - too short to be speech
-                self._bubble("Didn't catch that - keep the mic on while you speak, then click it again.",
-                             "system")
+            self._convo = False
+            self._convo_timer.stop()
+            self._end_listen_turn(discard=True)
+
+    def _start_listen_turn(self):
+        """Open the mic for one turn (if we're in conversation mode and Golem isn't talking/working)."""
+        if not self._convo or self._mic.is_recording() or self._transcribe is not None:
+            return
+        if not self._mic.start():
+            self._convo = False
+            self._convo_timer.stop()
+            self.listen_btn.setChecked(False)
+            self._bubble("Couldn't open the microphone. Check that one is plugged in and that Windows lets "
+                         "apps use it (Settings - Privacy - Microphone).", "system")
+            return
+        self._heard_speech = False
+        self._silence_since = 0.0
+        self._rec_start = time.time()
+        self.listen_btn.setText("●")
+        self.sub.setText("listening...")
+        self._signal_orb_listening()
+        self._vad_timer.start(120)
+
+    def _vad_tick(self):
+        if not self._mic.is_recording():
+            self._vad_timer.stop()
+            return
+        self._signal_orb_listening()
+        lvl = self._mic.level()
+        now = time.time()
+        if lvl >= VAD_START_RMS:
+            self._heard_speech = True
+            self._silence_since = 0.0
+        elif lvl < VAD_STOP_RMS and self._heard_speech:
+            if self._silence_since == 0.0:
+                self._silence_since = now
+            elif (now - self._silence_since) * 1000 >= VAD_SILENCE_MS:
+                self._end_listen_turn()
                 return
-            wav = Path(tempfile.gettempdir()) / f"golem-hear-{int(time.time() * 1000)}.wav"
-            try:
-                _write_wav16(wav, pcm)
-            except Exception:   # noqa: BLE001
-                return
-            self.entry.setPlaceholderText("Transcribing what you said...")
-            self.entry.setEnabled(False)
-            self._transcribe = TranscribeThread(wav)
-            self._transcribe.done.connect(self._heard)
-            self._transcribe.start()
+        if (now - self._rec_start) * 1000 >= VAD_MAX_MS:
+            self._end_listen_turn()
+
+    def _end_listen_turn(self, discard: bool = False):
+        """Stop recording. If something was said, transcribe + send it; else keep waiting (bounded)."""
+        self._vad_timer.stop()
+        recording = self._mic.is_recording()
+        pcm = self._mic.stop() if recording else b""
+        self.listen_btn.setText("●" if self._convo else "🎤")
+        self.sub.setText("")
+        if discard or not recording:
+            if not self._convo:
+                self.listen_btn.setText("🎤")
+            return
+        if not self._heard_speech or len(pcm) < int(16000 * 2 * 0.3):
+            self._convo_empty += 1
+            if self._convo and self._convo_empty < 3:
+                return            # the convo poller re-opens the mic shortly
+            self._end_conversation("I didn't hear anything, so I stopped listening. Click the mic to talk again.")
+            return
+        self._convo_empty = 0
+        wav = Path(tempfile.gettempdir()) / f"golem-hear-{int(time.time() * 1000)}.wav"
+        try:
+            _write_wav16(wav, pcm)
+        except Exception:   # noqa: BLE001
+            return
+        self.sub.setText("transcribing...")
+        self._transcribe = TranscribeThread(wav)
+        self._transcribe.done.connect(self._heard)
+        self._transcribe.start()
 
     def _heard(self, text: str):
         self._transcribe = None
-        self.entry.setEnabled(True)
-        self.entry.setPlaceholderText("")
+        self.sub.setText("")
         text = (text or "").strip()
         if not text:
-            self._bubble("Didn't catch that - try again, a little closer to the mic.", "system")
-            return
+            self._convo_empty += 1
+            if self._convo and self._convo_empty >= 3:
+                self._end_conversation("Didn't catch that. Click the mic to talk again.")
+            return                # convo poller will re-open the mic
+        self._convo_empty = 0
+        self._last_chunk_time = time.time()   # treat the reply as in-flight so we don't re-listen yet
         self.entry.setText(text)
-        self.send()   # hands-free: speak, and it sends
+        self.send()               # hands-free: your words go in and send
+
+    def _convo_poll(self):
+        """Once Golem has finished replying and speaking, re-open the mic for your next turn."""
+        if not self._convo:
+            self._convo_timer.stop()
+            return
+        if self._mic.is_recording() or self._transcribe is not None:
+            return
+        if self._voice_thread and self._voice_thread.isRunning():
+            return                # Golem is speaking - don't listen to itself
+        if self._speak_timer.isActive():
+            return                # a reply is queued to be spoken
+        if (time.time() - self._last_chunk_time) < 1.3:
+            return                # Golem is still producing its reply
+        self._start_listen_turn()
+
+    def _end_conversation(self, msg: str = ""):
+        self._convo = False
+        self._convo_timer.stop()
+        self._vad_timer.stop()
+        try:
+            self._mic.stop()
+        except Exception:   # noqa: BLE001
+            pass
+        self.listen_btn.setText("🎤")
+        self.listen_btn.setChecked(False)
+        self.sub.setText("")
+        if msg:
+            self._bubble(msg, "system")
+
+    def _signal_orb_listening(self):
+        """Tell the orb it's listening, so it shows a distinct state (a cool pulsing ring), not speaking."""
+        try:
+            now = time.time()
+            (Path(tempfile.gettempdir()) / "golem_orb_signal").write_text(f"{now + 1.0}\nLISTEN {now + 1.0}")
+        except Exception:   # noqa: BLE001
+            pass
 
     def _speak_current(self):
         """Fired a moment after the agent stops producing output: read the finished reply aloud once."""
@@ -942,6 +1069,7 @@ class AgentWindow(QWidget):
 
     def on_chunk(self, raw: str):
         raw = ANSI.sub("", raw)
+        self._last_chunk_time = time.time()   # agent is producing output - hands-free waits for it to finish
         if PERMISSION_HINT.search(raw):
             self.perm_bar.setVisible(True)
         data = self.line_buf + raw
@@ -1074,6 +1202,7 @@ class AgentWindow(QWidget):
         if not self._running():
             self._bubble("The agent isn't running - click Restart.", "system")
             return
+        self._last_chunk_time = time.time()   # reply incoming - keep hands-free from re-listening too soon
         self.entry.clear()
         self.perm_bar.setVisible(False)
         self.cur_agent, self.agent_text = None, ""   # next agent output starts a fresh bubble
