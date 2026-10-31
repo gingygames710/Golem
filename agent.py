@@ -334,9 +334,14 @@ def recall() -> str:
 # knowledge; this is the on-Windows seed of the Sovereign-OS provisioning idea.
 def open_app(name: str) -> str:
     """Launch a program or app by name or path (e.g. 'notepad', 'code', 'wireshark', or a full path)."""
-    name = (name or "").strip()
+    name = (name or "").strip().strip('"')
     if not name:
         return "No app name given."
+    # On Windows we go through `cmd /c start`, where shell metacharacters (& | < > ^ etc.) could chain a
+    # second command. This tool is permissioned, but a crafted name (e.g. from a web page the model read)
+    # must never smuggle in extra commands - reject anything that isn't plainly an app name or path.
+    if any(c in name for c in '&|<>^"`\n\r\t%') or "$(" in name:
+        return "That app name has characters I won't run, for safety. Give a plain app name or a full path."
     try:
         if IS_WINDOWS:
             subprocess.Popen(["cmd", "/c", "start", "", name], creationflags=CREATE_NO_WINDOW)
@@ -352,8 +357,13 @@ def open_url(url: str) -> str:
     url = (url or "").strip()
     if not url:
         return "No URL given."
-    if not re.match(r"^[a-zA-Z]+://", url):
-        url = "https://" + url
+    low = url.lower()
+    if re.match(r"^(javascript|data|file|vbscript|about|chrome|res|blob):", low):   # block risky schemes
+        return "I can only open normal web addresses (http/https)."
+    if not low.startswith(("http://", "https://")):
+        url = "https://" + url                                 # bare domain / host:port -> assume https
+    if not re.match(r"^https?://", url, re.I):
+        return "I can only open http or https web addresses."
     try:
         import webbrowser
         webbrowser.open(url)
@@ -426,8 +436,11 @@ def home_control(entity_id: str, service: str, value: str = "") -> str:
         return "Home control isn't set up yet (add Home Assistant in the Builder)."
     entity_id = (entity_id or "").strip()
     service = (service or "").strip()
-    if "." not in entity_id or not service:
-        return "Need a device id (like light.kitchen) and a service (turn_on/turn_off/toggle/set_temperature)."
+    # Strict shapes so nothing can smuggle extra path segments into the Home Assistant API URL.
+    if not re.match(r"^[a-z_]+\.[A-Za-z0-9_]+$", entity_id):
+        return "That isn't a valid device id - it should look like light.kitchen (see home_devices)."
+    if not re.match(r"^[a-z_]+$", service):
+        return "Unknown service. Use turn_on, turn_off, toggle, or set_temperature."
     domain = entity_id.split(".")[0]
     body = {"entity_id": entity_id}
     if service == "set_temperature" and value:
