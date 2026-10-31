@@ -3,7 +3,7 @@
 ; Compile with:  ISCC.exe golem.iss   ->  installer\Golem-setup-<version>.exe
 
 #define MyAppName "Golem"
-#define MyAppVersion "1.0.3"
+#define MyAppVersion "1.0.4"
 #define MyAppPublisher "Golem"
 #define BuilderExe "Golem-Builder.exe"
 #define AgentExe "Golem.exe"
@@ -24,8 +24,10 @@ OutputBaseFilename=Golem-setup-{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
-; So an in-place update (from the Builder's "Update now") can replace the running exes cleanly.
-CloseApplications=yes
+; We close running Golem apps ourselves in PrepareToInstall (taskkill), because the orb is a tray app
+; that ignores the Restart Manager's close request - so CloseApplications=yes reported "unable to close
+; all applications" and the update failed. Turn the RM off and force-close in code instead.
+CloseApplications=no
 RestartApplications=no
 SetupIconFile=icon.ico
 UninstallDisplayIcon={app}\{#BuilderExe}
@@ -66,6 +68,19 @@ var
   ResultCode: Integer;
 begin
   Result := Exec('cmd.exe', '/c where ollama', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  rc: Integer;
+begin
+  // Force-close every running Golem process so its exe isn't locked during the copy. We do this ourselves
+  // (taskkill) because the orb is a tray app that ignores the Restart Manager's polite close request,
+  // which is what made "Update now" fail with "unable to automatically close all applications".
+  Exec('taskkill.exe', '/F /IM Golem.exe /IM Golem-Orb.exe /IM golem-core.exe /IM Golem-Builder.exe',
+       '', SW_HIDE, ewWaitUntilTerminated, rc);
+  Sleep(1200);   // let the file handles release before the copy starts
+  Result := '';
 end;
 
 procedure InitializeWizard;

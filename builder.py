@@ -523,6 +523,12 @@ class Builder(QWidget):
     def flash(self, msg: str):
         self.status.setText(msg)
 
+    def closeEvent(self, event):
+        # Hard-exit so Golem-Builder.exe never lingers in the background with its worker threads still
+        # running (the agent window and orb it launched are separate processes and keep running).
+        event.accept()
+        os._exit(0)
+
     # ---------------------------------------------------------------- auto-update
     #
     # Checking is automatic and read-only (a GitHub API call on launch). Downloading and RUNNING the new
@@ -1057,6 +1063,8 @@ class Builder(QWidget):
         self.r_auto.setChecked(True)
         if self._rec:
             self.apply_recommendation()
+        if getattr(self, "orb_autostart_check", None) is not None:
+            self.orb_autostart_check.setChecked(True)   # the ambient orb is standard in Easy Mode
         # 3. A folder of its own, created for them, so Hardened Mode has something to fence to.
         folder = Path.home() / "Documents" / "Golem"
         try:
@@ -1397,7 +1405,8 @@ class Builder(QWidget):
         self.orb_launch_btn = QPushButton("Launch orb")
         self.orb_launch_btn.clicked.connect(self.launch_orb)
         orow.addWidget(self.orb_launch_btn)
-        self.orb_autostart_check = QCheckBox("Start it with the agent")
+        self.orb_autostart_check = QCheckBox("Start it with the agent (standard)")
+        self.orb_autostart_check.setChecked(True)
         orow.addWidget(self.orb_autostart_check)
         orow.addStretch(1)
         og.addLayout(orow)
@@ -1531,7 +1540,7 @@ class Builder(QWidget):
         if getattr(self, "voice_combo", None) is not None:
             self.voice_combo.setCurrentText(vc.get("voice", "en_US-lessac-medium"))
         if getattr(self, "orb_autostart_check", None) is not None:
-            self.orb_autostart_check.setChecked(bool(c.get("orb_autostart", False)))
+            self.orb_autostart_check.setChecked(bool(c.get("orb_autostart", True)))
         if getattr(self, "ollama_install_edit", None) is not None:
             self.ollama_install_edit.setText(c.get("ollama_install_dir", "") or "")
         if getattr(self, "ollama_models_edit", None) is not None:

@@ -332,7 +332,7 @@ class AgentWindow(QWidget):
         root.addWidget(self._composer())
 
         self.start_agent()
-        if _config().get("orb_autostart"):
+        if _config().get("orb_autostart", True):   # the orb is standard - on unless explicitly turned off
             self._launch_orb()
 
     def _launch_orb(self):
@@ -695,11 +695,21 @@ class AgentWindow(QWidget):
 
     def _terminate(self):
         if self._running():
-            self.proc.terminate()
             try:
-                self.proc.wait(3)
+                if os.name == "nt":
+                    # golem-core.exe is a PyInstaller one-file bootloader that runs the real worker as a
+                    # child, so terminate() on the bootloader leaves the worker (and anything it started)
+                    # alive in the background. Kill the whole process tree so nothing lingers.
+                    subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.proc.pid)],
+                                   capture_output=True, creationflags=CREATE_NO_WINDOW)
+                else:
+                    self.proc.terminate()
+                self.proc.wait(5)
             except Exception:  # noqa: BLE001
-                self.proc.kill()
+                try:
+                    self.proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
         if self.reader:
             self.reader.wait(2000)
 
@@ -918,8 +928,9 @@ class AgentWindow(QWidget):
                 self._voice_thread.wait(1500)   # let the voice thread finish before we tear down
             except Exception:
                 pass
-        self._terminate()
+        self._terminate()   # kill the agent core (whole tree) first, so nothing is left orphaned
         event.accept()
+        os._exit(0)         # hard-exit so Golem.exe never lingers in the background after you close it
 
 
 class AppearanceDialog(QDialog):

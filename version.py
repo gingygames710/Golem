@@ -5,7 +5,7 @@ checker compares it against the latest GitHub release. When cutting a release, b
 matching MyAppVersion in golem.iss (two spots, on purpose - the installer compiler can't import Python).
 """
 
-__version__ = "1.0.3"
+__version__ = "1.0.4"
 
 # The public GitHub repo the update checker queries for new releases.
 GITHUB_REPO = "gingygames710/Golem"

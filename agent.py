@@ -1374,7 +1374,7 @@ def default_config() -> dict:
         "ollama_install_dir": "",   # optional: pass to the Ollama installer's /DIR (keep it off C:)
         "ollama_models_dir": "",    # optional: sets OLLAMA_MODELS so model files live off C:
         "voice": {"enabled": False, "voice": "en_US-lessac-medium"},  # agent window reads replies aloud (Piper)
-        "orb_autostart": False,     # launch the ambient orb when the agent window opens
+        "orb_autostart": True,      # the ambient orb is standard - launches with the agent window
         "personality": "",
     }
 
