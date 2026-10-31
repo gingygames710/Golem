@@ -28,6 +28,12 @@ from PySide6.QtWidgets import (
     QColorDialog, QFontComboBox, QSlider, QDialog, QGridLayout, QSpinBox, QComboBox,
 )
 
+try:   # mic capture for talk-to-Golem (1.1.0); absent on a stripped build -> the 🎤 button hides itself
+    from PySide6.QtMultimedia import QAudioSource, QAudioFormat, QMediaDevices
+    HAVE_MIC = True
+except Exception:   # noqa: BLE001
+    HAVE_MIC = False
+
 # Same control-line protocol the core (agent.py) parses to attach an image/file to the next message.
 ATTACH_PREFIX = "\x1dGOLEM_ATTACH\x1d"
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -331,6 +337,88 @@ class VoicePlayer(QThread):
             self.done.emit()
 
 
+def _write_wav16(path: Path, pcm: bytes):
+    """Write raw 16 kHz mono 16-bit PCM bytes as a WAV (what whisper.cpp wants)."""
+    import wave
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(pcm)
+
+
+class MicRecorder:
+    """Record the default microphone to 16 kHz mono 16-bit PCM, on the GUI thread (event-driven)."""
+
+    def __init__(self):
+        self._src = None
+        self._io = None
+        self._buf = bytearray()
+
+    def start(self) -> bool:
+        if not HAVE_MIC:
+            return False
+        try:
+            fmt = QAudioFormat()
+            fmt.setSampleRate(16000)
+            fmt.setChannelCount(1)
+            fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+            dev = QMediaDevices.defaultAudioInput()
+            if dev is None or dev.isNull():
+                return False
+            self._buf = bytearray()
+            self._src = QAudioSource(dev, fmt)
+            self._io = self._src.start()
+            if self._io is None:
+                self._src = None
+                return False
+            self._io.readyRead.connect(self._on_ready)
+            return True
+        except Exception:   # noqa: BLE001
+            self._src = self._io = None
+            return False
+
+    def _on_ready(self):
+        try:
+            self._buf += bytes(self._io.readAll())
+        except Exception:   # noqa: BLE001
+            pass
+
+    def stop(self) -> bytes:
+        try:
+            if self._src:
+                self._src.stop()
+        except Exception:   # noqa: BLE001
+            pass
+        data = bytes(self._buf)
+        self._src = self._io = None
+        self._buf = bytearray()
+        return data
+
+
+class TranscribeThread(QThread):
+    """Run whisper.cpp on a recorded WAV off the UI thread, then delete the temp file."""
+    done = Signal(str)
+
+    def __init__(self, wav: Path):
+        super().__init__()
+        self.wav = wav
+
+    def run(self):
+        text = ""
+        try:
+            import agent
+            text = agent.whisper_transcribe(self.wav)
+        except Exception:   # noqa: BLE001
+            text = ""
+        finally:
+            try:
+                self.wav.unlink(missing_ok=True)
+            except Exception:   # noqa: BLE001
+                pass
+        self.done.emit(text)
+
+
 class AgentWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -355,6 +443,10 @@ class AgentWindow(QWidget):
         self._speak_timer = QTimer(self)
         self._speak_timer.setSingleShot(True)
         self._speak_timer.timeout.connect(self._speak_current)
+        self._mic = MicRecorder()          # talk-to-Golem: record the mic, whisper transcribes it
+        self._transcribe = None
+        self._listen_timer = QTimer(self)   # keeps the orb pulsing while Golem is listening
+        self._listen_timer.timeout.connect(lambda: self._ping_orb(0.6))
 
         self.proc = None
         self.reader = None
@@ -495,6 +587,60 @@ class AgentWindow(QWidget):
         except Exception:
             pass
 
+    # ---------------------------------------------------------------- talk to Golem (1.1.0, speech to text)
+
+    def _toggle_listen(self, on: bool):
+        if on:
+            try:
+                import agent
+                ready = agent.whisper_installed()
+            except Exception:   # noqa: BLE001
+                ready = False
+            if not ready:
+                self.listen_btn.setChecked(False)
+                self._bubble("To talk to Golem, open the Golem Builder, go to the Add-ons tab, and click "
+                             "Install under 'Talk to Golem' (a one-time download).", "system")
+                return
+            if not self._mic.start():
+                self.listen_btn.setChecked(False)
+                self._bubble("Couldn't open the microphone. Check that one is plugged in and that Windows "
+                             "lets apps use it (Settings - Privacy - Microphone).", "system")
+                return
+            self.listen_btn.setText("●")
+            self.listen_btn.setToolTip("Listening... click to send")
+            self._ping_orb(0.6)
+            self._listen_timer.start(400)
+        else:
+            self._listen_timer.stop()
+            self.listen_btn.setText("🎤")
+            self.listen_btn.setToolTip("Talk to Golem - click to start, click again to send")
+            pcm = self._mic.stop()
+            if len(pcm) < int(16000 * 2 * 0.3):   # under ~0.3s captured - too short to be speech
+                self._bubble("Didn't catch that - keep the mic on while you speak, then click it again.",
+                             "system")
+                return
+            wav = Path(tempfile.gettempdir()) / f"golem-hear-{int(time.time() * 1000)}.wav"
+            try:
+                _write_wav16(wav, pcm)
+            except Exception:   # noqa: BLE001
+                return
+            self.entry.setPlaceholderText("Transcribing what you said...")
+            self.entry.setEnabled(False)
+            self._transcribe = TranscribeThread(wav)
+            self._transcribe.done.connect(self._heard)
+            self._transcribe.start()
+
+    def _heard(self, text: str):
+        self._transcribe = None
+        self.entry.setEnabled(True)
+        self.entry.setPlaceholderText("")
+        text = (text or "").strip()
+        if not text:
+            self._bubble("Didn't catch that - try again, a little closer to the mic.", "system")
+            return
+        self.entry.setText(text)
+        self.send()   # hands-free: speak, and it sends
+
     def _speak_current(self):
         """Fired a moment after the agent stops producing output: read the finished reply aloud once."""
         if not self.speak_on or not piper_available():
@@ -582,6 +728,17 @@ class AgentWindow(QWidget):
             " QPushButton:checked { background:#1f6feb33; border-color:#1f6feb; }")
         self.speak_btn.toggled.connect(self._toggle_speak)
         h.addWidget(self.speak_btn)
+        if HAVE_MIC:
+            self.listen_btn = QPushButton("🎤")
+            self.listen_btn.setCheckable(True)
+            self.listen_btn.setCursor(Qt.PointingHandCursor)
+            self.listen_btn.setToolTip("Talk to Golem - click to start, click again to send")
+            self.listen_btn.setStyleSheet(
+                "QPushButton { background:transparent; border:1px solid #2a2f3a; border-radius:8px; "
+                "padding:6px 11px; font-size:15px; }"
+                " QPushButton:checked { background:#e5484d33; border-color:#e5484d; }")
+            self.listen_btn.toggled.connect(self._toggle_listen)
+            h.addWidget(self.listen_btn)
         self.appear_btn = QPushButton("🎨")
         self.appear_btn.setCursor(Qt.PointingHandCursor)
         self.appear_btn.setToolTip("Appearance - colors, font, and background image")

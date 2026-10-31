@@ -229,6 +229,12 @@ time with the speech (a flare on each loud syllable; no mouth, just light). Voic
 It all runs locally — nothing is sent anywhere. Only use voices you're allowed to; **cloning a voice from
 your own recording is a planned add-on.**
 
+**Talk to it.** Golem can listen as well as speak. Install it once from the Builder's **Add-ons → Talk to
+Golem** (a self-contained local engine, [whisper.cpp](https://github.com/ggml-org/whisper.cpp), ~155 MB,
+no Python, no account). Then a **🎤** button appears in the chat window: click it, speak, click again, and
+Golem transcribes what you said — on your own PC — and answers. The mic only records while you've switched
+it on, and the orb pulses while it listens.
+
 ## The ambient orb
 
 Golem's ambient presence: a floating **ball of data** — a glowing core with 1s and 0s orbiting it in

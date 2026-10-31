@@ -1109,6 +1109,82 @@ def generate_speech(text: str, path: str, voice: str = DEFAULT_VOICE) -> str:
     return f"Saved speech to {out}." if ok else f"Speech generation failed: {err}"
 
 
+# ---------------------------------------------------------------- speech to text (1.1.0, whisper.cpp)
+#
+# Talk TO Golem: a self-contained whisper.cpp binary (whisper-cli.exe + its DLLs, NO Python) transcribes
+# a recorded WAV locally - no cloud, no account. Downloaded on first enable from the Builder (the engine
+# is ~9 MB, the base.en model ~148 MB), mirroring the Piper setup. The chat window records the mic to a
+# 16 kHz mono WAV and hands it here.
+WHISPER_DIR = AGENT_DIR / "whisper"
+WHISPER_EXE = WHISPER_DIR / ("whisper-cli.exe" if IS_WINDOWS else "whisper-cli")
+WHISPER_MODEL = WHISPER_DIR / "ggml-base.en.bin"
+WHISPER_BIN_URL = "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip"
+WHISPER_MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
+
+
+def whisper_installed() -> bool:
+    """True when the speech-to-text engine and its model are both present - no Python needed."""
+    return WHISPER_EXE.exists() and WHISPER_MODEL.exists()
+
+
+def ensure_whisper(progress=None) -> bool:
+    """Download the whisper.cpp binary (just whisper-cli.exe + its DLLs) and the base.en model if missing."""
+    if whisper_installed():
+        return True
+    if not IS_WINDOWS:
+        return False
+    zip_path = WHISPER_DIR / "_whisper.zip"
+    try:
+        WHISPER_DIR.mkdir(parents=True, exist_ok=True)
+        if not WHISPER_EXE.exists():
+            if progress:
+                progress("Downloading the speech-to-text engine (about 9 MB, once)...")
+            urllib.request.urlretrieve(WHISPER_BIN_URL, zip_path)
+            if progress:
+                progress("Unpacking it...")
+            with zipfile.ZipFile(zip_path) as z:
+                # The zip has many tools (tests, parakeet, server...); keep only whisper-cli + the DLLs.
+                for info in z.infolist():
+                    name = Path(info.filename).name
+                    if not name:
+                        continue
+                    if name == WHISPER_EXE.name or name.lower().endswith(".dll"):
+                        with z.open(info) as src, open(WHISPER_DIR / name, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+        if not WHISPER_MODEL.exists():
+            if progress:
+                progress("Downloading the speech model (about 148 MB, once)...")
+            urllib.request.urlretrieve(WHISPER_MODEL_URL, WHISPER_MODEL)
+    except Exception:  # noqa: BLE001 - offline / blocked, just report not-installed
+        return False
+    finally:
+        try:
+            zip_path.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+    return whisper_installed()
+
+
+def whisper_transcribe(wav: Path) -> str:
+    """Transcribe a 16 kHz mono WAV with whisper.cpp. Returns the text, or '' on any failure."""
+    if not whisper_installed():
+        return ""
+    try:
+        p = subprocess.run([str(WHISPER_EXE), "-m", str(WHISPER_MODEL), "-f", str(wav),
+                            "-nt", "-l", "en", "-t", "4"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=120, cwd=str(WHISPER_DIR), creationflags=CREATE_NO_WINDOW)
+    except Exception:  # noqa: BLE001
+        return ""
+    if p.returncode != 0:
+        return ""
+    # With -nt (no timestamps) whisper-cli prints just the transcript lines to stdout.
+    text = " ".join(ln.strip() for ln in (p.stdout or "").splitlines() if ln.strip())
+    # whisper emits bracketed non-speech markers like [BLANK_AUDIO] or (wind blowing) - drop them.
+    text = re.sub(r"[\[(][^\])]*[\])]", " ", text)
+    return " ".join(text.split()).strip()
+
+
 def _ntfy_topic() -> str | None:
     topic = os.environ.get("NTFY_TOPIC")
     if topic:

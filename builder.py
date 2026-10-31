@@ -319,6 +319,28 @@ class UpdateCheckThread(QThread):
             self.result.emit({"ok": False, "error": str(e)})
 
 
+class WhisperSetupThread(QThread):
+    """Install the self-contained whisper.cpp speech-to-text engine + model (NO Python) - off-thread."""
+    line = Signal(str)
+    done = Signal(bool)
+
+    def run(self):
+        if not _agent_mod:
+            self.line.emit("Speech-to-text setup isn't available in this build.")
+            self.done.emit(False)
+            return
+        try:
+            if _agent_mod.ensure_whisper(progress=self.line.emit):
+                self.line.emit("Speech-to-text is ready. Click the microphone in the chat window to talk.")
+                self.done.emit(True)
+            else:
+                self.line.emit("Couldn't download the speech-to-text engine (no internet?). Try again later.")
+                self.done.emit(False)
+        except Exception as e:  # noqa: BLE001
+            self.line.emit(f"Speech-to-text setup failed: {e}")
+            self.done.emit(False)
+
+
 class VoiceSetupThread(QThread):
     """Install the self-contained Piper engine + a voice (NO Python), then play a test line - off-thread.
     This is the one-click, works-on-a-clean-machine path the Add-ons Voice toggle uses."""
@@ -384,6 +406,7 @@ class Builder(QWidget):
         self._easy_pending_launch = False  # Easy Mode: launch the agent once the model finishes pulling
         self._easy_pending_ollama = False  # Easy Mode: continue once Ollama finishes installing
         self.voice_test_thread = None      # running voice download/test
+        self.stt_thread = None             # running speech-to-text install
         self._rec = None  # the latest GPU model recommendation
         self.cfg = self.load_config()
 
@@ -1146,6 +1169,26 @@ class Builder(QWidget):
         self.voice_test_thread = None
         self._refresh_addon_status()
 
+    def _whisper_installed(self) -> bool:
+        if _agent_mod:
+            return _agent_mod.whisper_installed()
+        return (AGENT_DIR / "whisper" / ("whisper-cli.exe" if os.name == "nt" else "whisper-cli")).exists()
+
+    def setup_stt(self):
+        if getattr(self, "stt_thread", None):
+            return
+        self.stt_btn.setEnabled(False)
+        self.stt_log.setText("Setting up speech-to-text (one-time download)...")
+        self.stt_thread = WhisperSetupThread()
+        self.stt_thread.line.connect(self.stt_log.setText)
+        self.stt_thread.done.connect(self._stt_setup_done)
+        self.stt_thread.start()
+
+    def _stt_setup_done(self, ok: bool):
+        self.stt_btn.setEnabled(True)
+        self.stt_thread = None
+        self._refresh_addon_status()
+
     def apply_profile(self, pid: str):
         prof = PROFILES.get(pid, {})
         feats = prof.get("features") or {}
@@ -1415,6 +1458,24 @@ class Builder(QWidget):
         vg.addWidget(vnote)
         lay.addWidget(voice_box)
 
+        stt_box = QGroupBox("Talk to Golem - speak to it with your voice")
+        sg = QVBoxLayout(stt_box)
+        sg.addWidget(QLabel("Adds a microphone button to the chat window so you can talk instead of type. "
+                            "Uses a self-contained local engine (whisper) - no Python, no account, nothing "
+                            "sent anywhere. One-time download of about 155 MB."))
+        srow = QHBoxLayout()
+        self.stt_btn = QPushButton("Install speech-to-text")
+        self.stt_btn.clicked.connect(self.setup_stt)
+        self.stt_status = QLabel("")
+        srow.addWidget(self.stt_btn)
+        srow.addWidget(self.stt_status, 1)
+        sg.addLayout(srow)
+        self.stt_log = QLabel("")
+        self.stt_log.setStyleSheet("color:#888;")
+        self.stt_log.setWordWrap(True)
+        sg.addWidget(self.stt_log)
+        lay.addWidget(stt_box)
+
         orb_box = QGroupBox("Ambient orb")
         og = QVBoxLayout(orb_box)
         og.addWidget(QLabel("A floating ball of data that glows and pulses when Golem is active - "
@@ -1479,6 +1540,12 @@ class Builder(QWidget):
         if hasattr(self, "voice_status"):
             self.voice_status.setText("Voice engine installed." if self._voice_installed()
                                       else "Not installed yet - click Install.")
+        if hasattr(self, "stt_status"):
+            if self._whisper_installed():
+                self.stt_status.setText("Installed - use the microphone button in the chat window.")
+                self.stt_btn.setText("Reinstall speech-to-text")
+            else:
+                self.stt_status.setText("Not installed yet - click Install.")
 
     def install_gen(self):
         if self.addon_thread:
