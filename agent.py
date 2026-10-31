@@ -997,7 +997,7 @@ PIPER_VOICES_DIR = PIPER_DIR / "voices"               # the .onnx / .onnx.json v
 PIPER_EXE = PIPER_DIR / ("piper.exe" if IS_WINDOWS else "piper")
 PIPER_BIN_URL = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip"
 PIPER_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
-DEFAULT_VOICE = "en_US-lessac-medium"
+DEFAULT_VOICE = "en_US-hfc_female-medium"   # more natural than lessac (which sounded robotic)
 # Piper voice names look like "en_US-lessac-medium"; keep to that shape so a crafted name can't build a
 # weird path or URL.
 _VOICE_NAME_RE = re.compile(r"^[a-z]{2,3}_[A-Z]{2}-[a-z0-9_]+-(x_low|low|medium|high)$")
@@ -1098,7 +1098,7 @@ def piper_say(text: str, out: Path, voice: str = DEFAULT_VOICE) -> tuple[bool, s
     return True, ""
 
 
-def generate_speech(text: str, path: str, voice: str = "en_US-lessac-medium") -> str:
+def generate_speech(text: str, path: str, voice: str = DEFAULT_VOICE) -> str:
     """Turn text into speech with Piper (local TTS, no Python), saved as a .wav."""
     out = _resolve(path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -1470,7 +1470,7 @@ def default_config() -> dict:
         "check_updates": True,
         "ollama_install_dir": "",   # optional: pass to the Ollama installer's /DIR (keep it off C:)
         "ollama_models_dir": "",    # optional: sets OLLAMA_MODELS so model files live off C:
-        "voice": {"enabled": True, "voice": "en_US-lessac-medium"},  # agent reads replies aloud (Piper, bundled)
+        "voice": {"enabled": True, "voice": "en_US-hfc_female-medium"},  # agent reads replies aloud (Piper, bundled)
         "orb_autostart": True,      # the ambient orb is standard - launches with the agent window
         "personality": "",
     }

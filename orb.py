@@ -42,7 +42,7 @@ DEFAULT_ORB = {
     "spark": "#ffb473",   # the occasional digit that flares warm
     "size": 74,           # core radius in px (the window sizes itself to fit)
     "density": 120,       # how many digits orbit
-    "speed": 55,          # rotation speed
+    "speed": 70,          # rotation speed
     "opacity": 96,        # whole-orb opacity, 40-100
     "x": -1, "y": -1,     # saved position (-1 = bottom-right on first run)
 }
@@ -131,7 +131,10 @@ class Orb(QWidget):
 
     # ---- geometry ----
     def _win_half(self) -> int:
-        return int(self.ap["size"] * 1.75) + 28   # orbit radius + a margin for the outer digits/glow
+        # Must clear the LARGEST the orb ever draws, or the glow gets clipped by the (transparent) window
+        # edge and you see a hard square. Peak = glow(size*4) * max breathe(~1.36) * max bloom(~1.20) / 2
+        # = size*~3.3; size*3.4 leaves a margin so the halo always fades out inside the window.
+        return int(self.ap["size"] * 3.4) + 20
 
     def _resize_to_orb(self):
         s = self._win_half() * 2
@@ -327,8 +330,8 @@ class Orb(QWidget):
         active = now < self._active_until or speaking
 
         # gentle breathing; a little bigger/faster when active, and a sharp swell on each loud syllable
-        breathe = 1.0 + (0.10 if active else 0.055) * math.sin(t * (2.6 if active else 1.7)) + 0.32 * amp
-        spin = t * (self.ap["speed"] / 100.0) * (1.6 if active else 1.0)
+        breathe = 1.0 + (0.10 if active else 0.055) * math.sin(t * (2.6 if active else 1.7)) + 0.26 * amp
+        spin = t * (self.ap["speed"] / 65.0) * (1.9 if active else 1.0)   # livelier orbit
         tilt = 0.42
         Reff = R * breathe
 
@@ -382,8 +385,8 @@ class Orb(QWidget):
         p.drawPixmap(QPointF(cx - gs / 2, cy - gs / 2),
                      gp.scaled(int(gs), int(gs), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         if amp > 0.05:                    # a flare of light on each loud syllable - the orb "speaking"
-            bloom = gs * (1.0 + 0.55 * amp)
-            p.setOpacity(0.40 * amp)
+            bloom = gs * (1.0 + 0.20 * amp)   # brighten more than grow, so it never reaches the window edge
+            p.setOpacity(0.45 * amp)
             p.drawPixmap(QPointF(cx - bloom / 2, cy - bloom / 2),
                          gp.scaled(int(bloom), int(bloom), Qt.KeepAspectRatio, Qt.SmoothTransformation))
             p.setOpacity(1.0)

@@ -190,7 +190,7 @@ PIPER_DIR = AGENT_DIR / "piper"
 PIPER_VOICES_DIR = PIPER_DIR / "voices"
 PIPER_EXE = PIPER_DIR / ("piper.exe" if os.name == "nt" else "piper")
 PIPER_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
-DEFAULT_VOICE = "en_US-lessac-medium"
+DEFAULT_VOICE = "en_US-hfc_female-medium"   # more natural than lessac (which sounded robotic)
 
 
 def piper_available() -> bool:
@@ -235,10 +235,13 @@ def ensure_voice(voice: str) -> bool:
 
 
 _MD = re.compile(r"[`*#_>~\[\]]|\(https?://[^)]+\)")
+_BRACKET = re.compile(r"\[[^\]]*\]")                         # [brain: ...], [Paused ...] - status, never spoken
 
 
 def _clean_for_speech(text: str) -> str:
-    t = re.sub(r"```.*?```", " (code) ", text, flags=re.S)   # don't read code blocks aloud
+    t = ANSI.sub("", text)                                   # strip any colour codes
+    t = re.sub(r"```.*?```", " (code) ", t, flags=re.S)      # don't read code blocks aloud
+    t = _BRACKET.sub(" ", t)                                 # drop bracketed status notices (brain/model/etc.)
     t = _MD.sub("", t).strip()
     if len(t) > 700:                                         # trim long replies at a natural boundary
         cut = t[:700]

@@ -74,8 +74,9 @@ FEATURES = [
 SUGGESTED_MODELS = ["gemma4:12b", "hermes3", "qwen2.5:7b", "llama3.2:3b", "llava:13b", "mistral:7b"]
 
 # A few good local Piper voices to offer; the user can type any voice from the Piper library.
-PIPER_VOICES = ["en_US-lessac-medium", "en_US-amy-medium", "en_US-hfc_female-medium",
-                "en_US-ryan-high", "en_GB-alan-medium", "en_GB-northern_english_male-medium"]
+PIPER_VOICES = ["en_US-hfc_female-medium", "en_US-amy-medium", "en_US-ryan-high",
+                "en_US-hfc_male-medium", "en_US-lessac-medium", "en_GB-alan-medium",
+                "en_GB-northern_english_male-medium"]
 
 
 def gen_python() -> str:
@@ -494,7 +495,7 @@ class Builder(QWidget):
             "voice": {
                 "enabled": self.voice_check.isChecked() if getattr(self, "voice_check", None) else False,
                 "voice": (self.voice_combo.currentText().strip() if getattr(self, "voice_combo", None) else "")
-                         or "en_US-lessac-medium",
+                         or "en_US-hfc_female-medium",
             },
             "orb_autostart": self.orb_autostart_check.isChecked() if getattr(self, "orb_autostart_check", None) else False,
             "personality": self.persona_edit.toPlainText().strip(),
@@ -1130,7 +1131,7 @@ class Builder(QWidget):
     def setup_voice(self, test: bool = True):
         if getattr(self, "voice_test_thread", None):
             return
-        v = self.voice_combo.currentText().strip() or "en_US-lessac-medium"
+        v = self.voice_combo.currentText().strip() or "en_US-hfc_female-medium"
         self.voice_install_btn.setEnabled(False)
         self.voice_test_btn.setEnabled(False)
         self.voice_log.setText("Setting up the voice (one-time download)...")
@@ -1559,7 +1560,7 @@ class Builder(QWidget):
         if getattr(self, "voice_check", None) is not None:
             self.voice_check.setChecked(bool(vc.get("enabled", True)))
         if getattr(self, "voice_combo", None) is not None:
-            self.voice_combo.setCurrentText(vc.get("voice", "en_US-lessac-medium"))
+            self.voice_combo.setCurrentText(vc.get("voice", "en_US-hfc_female-medium"))
         if getattr(self, "orb_autostart_check", None) is not None:
             self.orb_autostart_check.setChecked(bool(c.get("orb_autostart", True)))
         if getattr(self, "ollama_install_edit", None) is not None:
