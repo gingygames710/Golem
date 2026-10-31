@@ -3,7 +3,7 @@
 ; Compile with:  ISCC.exe golem.iss   ->  installer\Golem-setup-<version>.exe
 
 #define MyAppName "Golem"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "Golem"
 #define BuilderExe "Golem-Builder.exe"
 #define AgentExe "Golem.exe"
@@ -54,6 +54,13 @@ Name: "{autodesktop}\Golem Builder";  Filename: "{app}\{#BuilderExe}"; Tasks: de
 Filename: "{app}\{#BuilderExe}"; Description: "Open the Golem Builder now"; Flags: nowait postinstall skipifsilent
 
 [Code]
+// When Ollama (the free local AI engine) isn't installed, Golem's own installer downloads and
+// SILENTLY installs it for the user - no web page, no second wizard, no terminal. OllamaSetup.exe is
+// an Inno Setup installer (it documents /DIR), so /VERYSILENT works. Falls back gracefully offline.
+var
+  DownloadPage: TDownloadWizardPage;
+  OllamaWanted: Boolean;
+
 function OllamaInstalled(): Boolean;
 var
   ResultCode: Integer;
@@ -61,18 +68,52 @@ begin
   Result := Exec('cmd.exe', '/c where ollama', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
 end;
 
+procedure InitializeWizard;
+begin
+  DownloadPage := CreateDownloadPage('Setting up Ollama',
+    'Downloading the free local AI engine that Golem runs models on. No action needed.', nil);
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if CurPageID <> wpReady then
+    Exit;
+  OllamaWanted := False;
+  if not OllamaInstalled() then
+  begin
+    if MsgBox('Golem needs Ollama - the free engine it runs AI models on - and it is not installed yet.'
+       + #13#10 + #13#10 + 'Install it automatically now? (about 1 GB downloads; nothing for you to click.)'
+       + #13#10 + 'Choose No to skip - you can set it up later from the Golem Builder.',
+       mbConfirmation, MB_YESNO) = IDYES then
+    begin
+      DownloadPage.Clear;
+      DownloadPage.Add('https://ollama.com/download/OllamaSetup.exe', 'OllamaSetup.exe', '');
+      DownloadPage.Show;
+      try
+        try
+          DownloadPage.Download;
+          OllamaWanted := True;
+        except
+          MsgBox('Could not download Ollama automatically (no internet?). You can install it later from'
+             + ' the Golem Builder - open it and click "Install for me" on the Brain tab.',
+             mbInformation, MB_OK);
+        end;
+      finally
+        DownloadPage.Hide;
+      end;
+    end;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
 begin
-  if CurStep = ssPostInstall then
+  if (CurStep = ssPostInstall) and OllamaWanted then
   begin
-    if not OllamaInstalled() then
-    begin
-      if MsgBox('Golem runs AI models locally through Ollama, which does not appear to be installed.'
-         + #13#10 + #13#10 + 'Open the Ollama download page now? (Install it, then open the Golem Builder'
-         + ' to download a model.)', mbConfirmation, MB_YESNO) = IDYES then
-        ShellExec('open', 'https://ollama.com/download', '', '', SW_SHOW, ewNoWait, ResultCode);
-    end;
+    if FileExists(ExpandConstant('{tmp}\OllamaSetup.exe')) then
+      Exec(ExpandConstant('{tmp}\OllamaSetup.exe'), '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART',
+           '', SW_SHOW, ewWaitUntilTerminated, ResultCode);
   end;
 end;
