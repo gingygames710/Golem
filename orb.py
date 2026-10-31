@@ -127,7 +127,7 @@ class Orb(QWidget):
         self._signal = Path(tempfile.gettempdir()) / "golem_orb_signal"
         self._sig_timer = QTimer(self)
         self._sig_timer.timeout.connect(self._check_signal)
-        self._sig_timer.start(220)
+        self._sig_timer.start(90)          # poll often enough that the speech pulse starts in time with the voice
 
     # ---- geometry ----
     def _win_half(self) -> int:
@@ -142,11 +142,14 @@ class Orb(QWidget):
 
     def _place(self):
         s = self.size().width()
+        scr = QApplication.primaryScreen().availableGeometry()
         if self.ap["x"] < 0 or self.ap["y"] < 0:
-            scr = QApplication.primaryScreen().availableGeometry()
             self.move(scr.right() - s - 24, scr.bottom() - s - 24)
         else:
-            self.move(int(self.ap["x"]), int(self.ap["y"]))
+            # Clamp a saved position so the (now larger) window can't end up off-screen after an update.
+            x = max(scr.left(), min(int(self.ap["x"]), scr.right() - s))
+            y = max(scr.top(), min(int(self.ap["y"]), scr.bottom() - s))
+            self.move(x, y)
 
     # ---- click-through (Windows) ----
     def showEvent(self, e):
