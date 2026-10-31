@@ -21,11 +21,12 @@ import urllib.request
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QFont, QIcon, QPixmap, QColor, QPainter
+from PySide6.QtGui import QFont, QIcon, QPixmap, QColor, QPainter, QAction
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QScrollArea, QFrame, QFileDialog,
     QColorDialog, QFontComboBox, QSlider, QDialog, QGridLayout, QSpinBox, QComboBox,
+    QSystemTrayIcon, QMenu,
 )
 
 try:   # mic capture for talk-to-Golem (1.1.0); absent on a stripped build -> the 🎤 button hides itself
@@ -523,6 +524,11 @@ class AgentWindow(QWidget):
             self._launch_orb()
         if self._wake and HAVE_MIC:                 # listen for "Hey Golem" in the background, if enabled
             QTimer.singleShot(1500, self._start_wake)
+        self._tray_presence = bool(_config().get("tray_presence", False))
+        self._really_quit = False
+        self._tray = None
+        if self._tray_presence:
+            self._setup_tray()
         if _config().get("first_run", False):       # a warm spoken hello the very first time
             QTimer.singleShot(1400, self._first_run_greeting)
         _launch = [r for r in (_config().get("routines") or []) if r.get("at_launch")]
@@ -843,6 +849,46 @@ class AgentWindow(QWidget):
         new = not self._convo                         # orb click toggles the conversation
         self.listen_btn.setChecked(new)               # visual only (clicked signal doesn't fire on this)
         self._toggle_listen(new)                      # so drive it ourselves
+
+    def _setup_tray(self):
+        """A system-tray presence so closing the window keeps Golem running (ready + listening)."""
+        try:
+            if not QSystemTrayIcon.isSystemTrayAvailable():
+                return
+            self._tray = QSystemTrayIcon(QIcon(str(ICON)) if ICON.exists() else self.windowIcon(), self)
+            self._tray.setToolTip(f"{self.name} - Golem")
+            m = QMenu()
+            a_show = QAction("Show Golem", m)
+            a_show.triggered.connect(self._show_from_tray)
+            a_talk = QAction("Talk to Golem", m)
+            a_talk.triggered.connect(self._talk_from_tray)
+            a_quit = QAction("Quit Golem", m)
+            a_quit.triggered.connect(self._quit_fully)
+            m.addAction(a_show)
+            m.addAction(a_talk)
+            m.addSeparator()
+            m.addAction(a_quit)
+            self._tray.setContextMenu(m)
+            self._tray.activated.connect(
+                lambda r: self._show_from_tray() if r == QSystemTrayIcon.Trigger else None)
+            self._tray.show()
+        except Exception:   # noqa: BLE001
+            self._tray = None
+
+    def _show_from_tray(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _talk_from_tray(self):
+        self._show_from_tray()
+        if HAVE_MIC and not self._convo:
+            self.listen_btn.setChecked(True)
+            self._toggle_listen(True)
+
+    def _quit_fully(self):
+        self._really_quit = True
+        self.close()
 
     def _first_run_greeting(self):
         """The very first launch: Golem introduces itself, speaks the hello, and the orb pulses a welcome."""
@@ -1497,6 +1543,15 @@ class AgentWindow(QWidget):
             self._bubble("Could not reach the agent - click Restart.", "system")
 
     def closeEvent(self, event):
+        if getattr(self, "_tray_presence", False) and self._tray is not None and not self._really_quit:
+            event.ignore()                 # keep Golem running in the tray instead of quitting
+            self.hide()
+            try:
+                self._tray.showMessage("Golem", "Still here in the tray - click to come back, or right-click "
+                                       "to quit.", QSystemTrayIcon.Information, 3000)
+            except Exception:   # noqa: BLE001
+                pass
+            return
         try:
             if os.name == "nt":
                 import winsound

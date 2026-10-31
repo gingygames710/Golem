@@ -69,6 +69,7 @@ FEATURES = [
     ("speech",        "Text to speech",                "Local Piper voice. Needs gen/ setup."),
     ("notifications", "Notify my phone",               "Push via ntfy when a job finishes or it gets stuck."),
     ("workspace",     "Set up my workspace",           "Open apps and pages on command - “get me ready for X”."),
+    ("home",          "Control my smart home",         "Turn lights/plugs/thermostat on or off via your local Home Assistant."),
 ]
 
 # A few known-good models to offer in the 'pull' box. The user can type any Ollama tag.
@@ -537,6 +538,11 @@ class Builder(QWidget):
             },
             "orb_autostart": self.orb_autostart_check.isChecked() if getattr(self, "orb_autostart_check", None) else False,
             "routines": list(self._routines),
+            "home_assistant": {
+                "url": self.ha_url_edit.text().strip() if getattr(self, "ha_url_edit", None) else "",
+                "token": self.ha_token_edit.text().strip() if getattr(self, "ha_token_edit", None) else "",
+            },
+            "tray_presence": self.tray_presence_check.isChecked() if getattr(self, "tray_presence_check", None) else False,
             "personality": self.persona_edit.toPlainText().strip(),
         }
 
@@ -1570,6 +1576,38 @@ class Builder(QWidget):
         rtg.addLayout(rtrow)
         lay.addWidget(routines_box)
 
+        home_box = QGroupBox("Smart home (Home Assistant)")
+        hg = QVBoxLayout(home_box)
+        hg.addWidget(QLabel("Let Golem control your smart home through Home Assistant (open-source, runs on "
+                            "your own network - nothing goes to the cloud). Paste your HA address and a "
+                            "long-lived token (in HA: your profile - Long-lived access tokens). Then tick "
+                            "“Control my smart home” in this agent's abilities."))
+        hrow1 = QHBoxLayout()
+        hrow1.addWidget(QLabel("Address:"))
+        self.ha_url_edit = QLineEdit()
+        self.ha_url_edit.setPlaceholderText("http://homeassistant.local:8123")
+        hrow1.addWidget(self.ha_url_edit, 1)
+        hg.addLayout(hrow1)
+        hrow2 = QHBoxLayout()
+        hrow2.addWidget(QLabel("Token:"))
+        self.ha_token_edit = QLineEdit()
+        self.ha_token_edit.setEchoMode(QLineEdit.Password)
+        self.ha_token_edit.setPlaceholderText("long-lived access token")
+        hrow2.addWidget(self.ha_token_edit, 1)
+        hg.addLayout(hrow2)
+        lay.addWidget(home_box)
+
+        presence_box = QGroupBox("Presence")
+        pg = QVBoxLayout(presence_box)
+        self.tray_presence_check = QCheckBox("Keep Golem running in the tray when I close the chat window")
+        pg.addWidget(self.tray_presence_check)
+        pnote = QLabel("On: closing the window hides Golem to the tray so it stays ready (the wake word keeps "
+                       "listening); quit fully from the tray icon. Off: closing shuts Golem down.")
+        pnote.setStyleSheet("color:#888;")
+        pnote.setWordWrap(True)
+        pg.addWidget(pnote)
+        lay.addWidget(presence_box)
+
         upd_box = QGroupBox("Updates")
         ug = QVBoxLayout(upd_box)
         ug.addWidget(QLabel(f"You're running Golem {VERSION}."))
@@ -1710,6 +1748,13 @@ class Builder(QWidget):
             self.stt_wake_check.setChecked(bool(vc.get("wake", False)))
         self._routines = list(c.get("routines") or [])
         self._refresh_routines_list()
+        ha = c.get("home_assistant") or {}
+        if getattr(self, "ha_url_edit", None) is not None:
+            self.ha_url_edit.setText(ha.get("url", ""))
+        if getattr(self, "ha_token_edit", None) is not None:
+            self.ha_token_edit.setText(ha.get("token", ""))
+        if getattr(self, "tray_presence_check", None) is not None:
+            self.tray_presence_check.setChecked(bool(c.get("tray_presence", False)))
         if getattr(self, "orb_autostart_check", None) is not None:
             self.orb_autostart_check.setChecked(bool(c.get("orb_autostart", True)))
         if getattr(self, "ollama_install_edit", None) is not None:

@@ -362,6 +362,86 @@ def open_url(url: str) -> str:
         return f"Couldn't open {url}: {e}"
 
 
+def save_routine(name: str, prompt: str) -> str:
+    """Save a reusable quick task (a 'routine') so it becomes a one-click button in the chat window."""
+    name = " ".join((name or "").split())[:24]
+    prompt = (prompt or "").strip()
+    if not name or not prompt:
+        return "A routine needs both a short name and what to do."
+    try:
+        cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8-sig")) if CONFIG_FILE.exists() else {}
+    except Exception:  # noqa: BLE001
+        cfg = {}
+    routines = cfg.get("routines") or []
+    routines = [r for r in routines if r.get("name") != name]   # replace one with the same name
+    routines.append({"name": name, "prompt": prompt, "at_launch": False})
+    cfg["routines"] = routines[-24:]
+    try:
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        return f"Couldn't save the routine: {e}"
+    return f"Saved the routine '{name}'. It'll be a one-click button in the chat window next time you open Golem."
+
+
+# ---------------------------------------------------------------- smart home (1.7.0, Home Assistant)
+#
+# Golem can control the user's own smart-home devices through a local Home Assistant (open-source,
+# local-first) - the first real brick of the Sovereign-OS "house brain". Needs HA's base URL + a
+# long-lived token, set in the Builder. Uses HA's REST API; all on the user's LAN, nothing to the cloud.
+def _ha_request(path: str, method: str = "GET", body: dict | None = None):
+    url, tok = HA_URL.rstrip("/"), HA_TOKEN
+    if not url or not tok:
+        raise RuntimeError("not configured")
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+    req = urllib.request.Request(f"{url}{path}", data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=12) as r:
+        raw = r.read().decode("utf-8", "replace")
+    return json.loads(raw) if raw.strip() else {}
+
+
+def home_devices() -> str:
+    """List the controllable smart-home devices (lights, switches, climate, media, etc.)."""
+    if not HA_URL or not HA_TOKEN:
+        return ("Home control isn't set up yet. In the Golem Builder, add your Home Assistant address and "
+                "token under Smart home.")
+    try:
+        states = _ha_request("/api/states")
+    except Exception as e:  # noqa: BLE001
+        return f"Couldn't reach Home Assistant: {e}"
+    keep = ("light", "switch", "climate", "media_player", "fan", "lock", "cover")
+    rows = []
+    for s in states:
+        eid = s.get("entity_id", "")
+        if eid.split(".")[0] in keep:
+            name = (s.get("attributes") or {}).get("friendly_name", eid)
+            rows.append(f"{eid}  ({name}): {s.get('state')}")
+    return ("Smart-home devices:\n" + "\n".join(rows[:80])) if rows else "No controllable devices found."
+
+
+def home_control(entity_id: str, service: str, value: str = "") -> str:
+    """Control a device: service is turn_on / turn_off / toggle / set_temperature. value is for
+    set_temperature (degrees). entity_id is like 'light.kitchen' (see home_devices)."""
+    if not HA_URL or not HA_TOKEN:
+        return "Home control isn't set up yet (add Home Assistant in the Builder)."
+    entity_id = (entity_id or "").strip()
+    service = (service or "").strip()
+    if "." not in entity_id or not service:
+        return "Need a device id (like light.kitchen) and a service (turn_on/turn_off/toggle/set_temperature)."
+    domain = entity_id.split(".")[0]
+    body = {"entity_id": entity_id}
+    if service == "set_temperature" and value:
+        try:
+            body["temperature"] = float(value)
+        except ValueError:
+            return "set_temperature needs a number, e.g. 70."
+    try:
+        _ha_request(f"/api/services/{domain}/{service}", method="POST", body=body)
+    except Exception as e:  # noqa: BLE001
+        return f"Couldn't control {entity_id}: {e}"
+    return f"Done - {service.replace('_', ' ')} on {entity_id}" + (f" ({value})" if value else "") + "."
+
+
 # ---------------------------------------------------------------- tools
 
 def _resolve(path: str) -> Path:
@@ -464,6 +544,8 @@ SANDBOX_BACKEND = "auto"      # auto | windows-sandbox | wsl | none  (what to pr
 SANDBOX_NETWORK = "off"       # off | loopback | on  (network stance inside the box)
 _SANDBOX_ACTIVE = "none"      # what actually resolved at startup (set by resolve_sandbox)
 ACTIVE_PROFILE = "general"    # config "profile": which sector preset's guardrails to layer into the prompt
+HA_URL = ""                   # config "home_assistant": local Home Assistant base URL + long-lived token,
+HA_TOKEN = ""                 # so Golem can control the user's own smart-home devices (the Sovereign OS seed)
 
 # Paths that look like secrets/credentials - the agent refuses to read OR change them, even inside allowed folders.
 SENSITIVE_PATH = re.compile(
@@ -1499,6 +1581,17 @@ TOOLS = {
     "open_url": (open_url, _tool(
         "open_url", "Open a web page in the user's default browser (part of setting up a workspace).",
         {"url": S}, ["url"], True)),
+    "save_routine": (save_routine, _tool(
+        "save_routine", "Save a reusable quick task as a 'routine' - it becomes a one-click button in the "
+        "chat window. Use when the user asks you to remember how to set something up.",
+        {"name": S, "prompt": S}, ["name", "prompt"], False)),
+    "home_devices": (home_devices, _tool(
+        "home_devices", "List the user's smart-home devices and their state (via their local Home Assistant).",
+        {}, [], False)),
+    "home_control": (home_control, _tool(
+        "home_control", "Control a smart-home device via Home Assistant. service: turn_on, turn_off, toggle, "
+        "or set_temperature (with value in degrees). Asks permission first.",
+        {"entity_id": S, "service": S, "value": S}, ["entity_id", "service"], True)),
 }
 COMPUTER_TOOLS = {
     "screenshot": (screenshot, _tool(
@@ -1533,7 +1626,8 @@ FEATURE_TOOLS = {
     "audio_gen":     ["generate_audio"],
     "speech":        ["generate_speech"],
     "notifications": ["send_notification"],
-    "workspace":     ["open_app", "open_url"],
+    "workspace":     ["open_app", "open_url", "save_routine"],
+    "home":          ["home_devices", "home_control"],
 }
 
 
@@ -1693,6 +1787,8 @@ def default_config() -> dict:
         "orb_autostart": True,      # the ambient orb is standard - launches with the agent window
         "first_run": True,          # cleared after the first welcome, so the greeting only happens once
         "routines": [],             # saved quick tasks: [{"name","prompt","at_launch"}] - buttons in the chat window
+        "home_assistant": {"url": "", "token": ""},   # control the user's own smart home (Sovereign OS seed)
+        "tray_presence": False,     # keep Golem running in the tray when the chat window is closed
         "personality": "",
     }
 
@@ -1709,6 +1805,9 @@ def enabled_tools_from(features: dict) -> set:
 def apply_config(args, cfg: dict) -> set:
     """Fill an argparse Namespace from a Builder config, and return the enabled tool names."""
     global ALLOWED_DIRS, STICKY_TAINT, HARDENED, ACTIVE_PROFILE, SANDBOX_ENABLED, SANDBOX_BACKEND, SANDBOX_NETWORK
+    global HA_URL, HA_TOKEN
+    ha = cfg.get("home_assistant") or {}
+    HA_URL, HA_TOKEN = (ha.get("url") or "").strip(), (ha.get("token") or "").strip()
     ALLOWED_DIRS = [Path(f).expanduser().resolve() for f in cfg.get("folders", []) if str(f).strip()]
     ACTIVE_PROFILE = cfg.get("profile", "general") or "general"
     HARDENED = bool(cfg.get("hardened", False))
