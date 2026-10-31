@@ -1546,7 +1546,7 @@ def default_config() -> dict:
         "check_updates": True,
         "ollama_install_dir": "",   # optional: pass to the Ollama installer's /DIR (keep it off C:)
         "ollama_models_dir": "",    # optional: sets OLLAMA_MODELS so model files live off C:
-        "voice": {"enabled": True, "voice": "en_US-hfc_female-medium"},  # agent reads replies aloud (Piper, bundled)
+        "voice": {"enabled": True, "voice": "en_US-hfc_female-medium", "wake": False},  # speak aloud; wake = "Hey Golem"
         "orb_autostart": True,      # the ambient orb is standard - launches with the agent window
         "personality": "",
     }

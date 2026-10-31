@@ -519,6 +519,7 @@ class Builder(QWidget):
                 "enabled": self.voice_check.isChecked() if getattr(self, "voice_check", None) else False,
                 "voice": (self.voice_combo.currentText().strip() if getattr(self, "voice_combo", None) else "")
                          or "en_US-hfc_female-medium",
+                "wake": self.stt_wake_check.isChecked() if getattr(self, "stt_wake_check", None) else False,
             },
             "orb_autostart": self.orb_autostart_check.isChecked() if getattr(self, "orb_autostart_check", None) else False,
             "personality": self.persona_edit.toPlainText().strip(),
@@ -1470,10 +1471,18 @@ class Builder(QWidget):
         srow.addWidget(self.stt_btn)
         srow.addWidget(self.stt_status, 1)
         sg.addLayout(srow)
+        self.stt_wake_check = QCheckBox("Also listen for the wake word “Hey Golem” (keeps the mic on in the background)")
+        sg.addWidget(self.stt_wake_check)
         self.stt_log = QLabel("")
         self.stt_log.setStyleSheet("color:#888;")
         self.stt_log.setWordWrap(True)
         sg.addWidget(self.stt_log)
+        swnote = QLabel("With the wake word on, Golem's mic stays on and listens for its name - it only acts "
+                        "when you say “Hey Golem”. All on your PC; nothing is sent anywhere. Leave it off to "
+                        "talk only when you click the microphone.")
+        swnote.setStyleSheet("color:#888;")
+        swnote.setWordWrap(True)
+        sg.addWidget(swnote)
         lay.addWidget(stt_box)
 
         orb_box = QGroupBox("Ambient orb")
@@ -1628,6 +1637,8 @@ class Builder(QWidget):
             self.voice_check.setChecked(bool(vc.get("enabled", True)))
         if getattr(self, "voice_combo", None) is not None:
             self.voice_combo.setCurrentText(vc.get("voice", "en_US-hfc_female-medium"))
+        if getattr(self, "stt_wake_check", None) is not None:
+            self.stt_wake_check.setChecked(bool(vc.get("wake", False)))
         if getattr(self, "orb_autostart_check", None) is not None:
             self.orb_autostart_check.setChecked(bool(c.get("orb_autostart", True)))
         if getattr(self, "ollama_install_edit", None) is not None:

@@ -198,6 +198,8 @@ class Orb(QWidget):
 
     def _menu(self) -> QMenu:
         m = QMenu()
+        talk = QAction("Talk to Golem", m)
+        talk.triggered.connect(self._request_talk)
         lock = QAction("Lock in place" if not self.locked else "Unlock to move", m)
         lock.triggered.connect(lambda: self.set_locked(not self.locked))
         appr = QAction("Appearance...", m)
@@ -206,12 +208,22 @@ class Orb(QWidget):
         pulse.triggered.connect(lambda: self.pulse(1.5))
         quit_a = QAction("Quit", m)
         quit_a.triggered.connect(QApplication.quit)
+        m.addAction(talk)
+        m.addSeparator()
         m.addAction(lock)
         m.addAction(appr)
         m.addAction(pulse)
         m.addSeparator()
         m.addAction(quit_a)
         return m
+
+    def _request_talk(self):
+        """Ask the chat window to start/stop a voice conversation (it polls this file)."""
+        try:
+            (Path(tempfile.gettempdir()) / "golem_orb_request").write_text(str(time.time()))
+            self.pulse(1.0)
+        except Exception:
+            pass
 
     # ---- activity ----
     def pulse(self, seconds: float = 1.0):

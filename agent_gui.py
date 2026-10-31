@@ -39,6 +39,7 @@ VAD_START_RMS = 450      # above this = you're talking
 VAD_STOP_RMS = 250       # below this = quiet
 VAD_SILENCE_MS = 1200    # end the turn after this much trailing quiet (once you've spoken)
 VAD_MAX_MS = 15000       # hard cap on one listening turn, so it can't listen forever
+WAKE_RE = re.compile(r"\b(?:hey\s+|ok(?:ay)?\s+)?golem\b[\s,.:!?-]*", re.I)   # "Hey Golem", "ok golem", "golem"
 
 # Same control-line protocol the core (agent.py) parses to attach an image/file to the next message.
 ATTACH_PREFIX = "\x1dGOLEM_ATTACH\x1d"
@@ -471,6 +472,7 @@ class AgentWindow(QWidget):
         self._mic = MicRecorder()          # talk-to-Golem: record the mic, whisper transcribes it
         self._transcribe = None
         self._convo = False                # hands-free conversation mode (mic button on)
+        self._wake = bool(vc.get("wake", False))   # passive "Hey Golem" wake-word listening (opt-in)
         self._convo_empty = 0              # consecutive silent/empty turns, so noise can't loop forever
         self._heard_speech = False
         self._silence_since = 0.0
@@ -480,6 +482,11 @@ class AgentWindow(QWidget):
         self._vad_timer.timeout.connect(self._vad_tick)
         self._convo_timer = QTimer(self)   # re-opens the mic for the next turn once Golem is idle
         self._convo_timer.timeout.connect(self._convo_poll)
+        self._orb_req = Path(tempfile.gettempdir()) / "golem_orb_request"   # orb -> window: "talk to me"
+        self._orb_req_seen = ""
+        self._orb_req_timer = QTimer(self)
+        self._orb_req_timer.timeout.connect(self._orb_req_poll)
+        self._orb_req_timer.start(400)
 
         self.proc = None
         self.reader = None
@@ -513,6 +520,8 @@ class AgentWindow(QWidget):
         self.start_agent()
         if _config().get("orb_autostart", True):   # the orb is standard - on unless explicitly turned off
             self._launch_orb()
+        if self._wake and HAVE_MIC:                 # listen for "Hey Golem" in the background, if enabled
+            QTimer.singleShot(1500, self._start_wake)
 
     def _launch_orb(self):
         """Start the ambient orb (the frozen exe if installed, else orb.py). Best-effort."""
@@ -615,7 +624,7 @@ class AgentWindow(QWidget):
     def _save_voice_cfg(self):
         try:
             cfg = _config()
-            cfg["voice"] = {"enabled": self.speak_on, "voice": self.voice_name}
+            cfg["voice"] = {"enabled": self.speak_on, "voice": self.voice_name, "wake": self._wake}
             CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
         except Exception:
             pass
@@ -647,26 +656,46 @@ class AgentWindow(QWidget):
             self._convo_timer.start(400)
             self._start_listen_turn()
         else:
+            self._stop_speech()                 # clicking the mic off also shuts Golem up (manual interrupt)
             self._convo = False
-            self._convo_timer.stop()
+            self._convo_empty = 0
             self._end_listen_turn(discard=True)
+            if self._wake:
+                self._start_wake()              # drop back to passively waiting for "Hey Golem"
+            else:
+                self._convo_timer.stop()
+
+    def _start_wake(self):
+        """Begin passive 'Hey Golem' listening: the mic stays open, whisper only runs when you speak,
+        and a conversation starts only when your words contain the wake word."""
+        if not self._wake or not HAVE_MIC:
+            return
+        self._convo_timer.start(400)
+        self._start_listen_turn()
+
+    def _listening(self) -> bool:
+        return self._wake or self._convo
 
     def _start_listen_turn(self):
-        """Open the mic for one turn (if we're in conversation mode and Golem isn't talking/working)."""
-        if not self._convo or self._mic.is_recording() or self._transcribe is not None:
+        """Open the mic for one turn (conversation or passive wake), if Golem isn't talking/working."""
+        if not self._listening() or self._mic.is_recording() or self._transcribe is not None:
+            return
+        if not self._running():
             return
         if not self._mic.start():
-            self._convo = False
+            self._convo = self._wake = False
             self._convo_timer.stop()
-            self.listen_btn.setChecked(False)
+            if HAVE_MIC:
+                self.listen_btn.setChecked(False)
             self._bubble("Couldn't open the microphone. Check that one is plugged in and that Windows lets "
                          "apps use it (Settings - Privacy - Microphone).", "system")
             return
         self._heard_speech = False
         self._silence_since = 0.0
         self._rec_start = time.time()
-        self.listen_btn.setText("●")
-        self.sub.setText("listening...")
+        if HAVE_MIC:
+            self.listen_btn.setText("●")
+        self.sub.setText("listening for 'Hey Golem'..." if (self._wake and not self._convo) else "listening...")
         self._signal_orb_listening()
         self._vad_timer.start(120)
 
@@ -690,22 +719,23 @@ class AgentWindow(QWidget):
             self._end_listen_turn()
 
     def _end_listen_turn(self, discard: bool = False):
-        """Stop recording. If something was said, transcribe + send it; else keep waiting (bounded)."""
+        """Stop recording. If something was said, transcribe it; else keep waiting (convo bails after a few)."""
         self._vad_timer.stop()
         recording = self._mic.is_recording()
         pcm = self._mic.stop() if recording else b""
-        self.listen_btn.setText("●" if self._convo else "🎤")
+        if HAVE_MIC:
+            self.listen_btn.setText("●" if self._listening() else "🎤")
         self.sub.setText("")
         if discard or not recording:
-            if not self._convo:
-                self.listen_btn.setText("🎤")
             return
         if not self._heard_speech or len(pcm) < int(16000 * 2 * 0.3):
-            self._convo_empty += 1
-            if self._convo and self._convo_empty < 3:
-                return            # the convo poller re-opens the mic shortly
-            self._end_conversation("I didn't hear anything, so I stopped listening. Click the mic to talk again.")
-            return
+            if self._convo:
+                self._convo_empty += 1
+                if self._convo_empty >= 3:
+                    self._end_conversation("I didn't hear anything, so I stopped the conversation. "
+                                           "Click the mic to talk again.")
+                    return
+            return            # wake mode just keeps waiting; the poller re-opens the mic
         self._convo_empty = 0
         wav = Path(tempfile.gettempdir()) / f"golem-hear-{int(time.time() * 1000)}.wav"
         try:
@@ -721,19 +751,40 @@ class AgentWindow(QWidget):
         self._transcribe = None
         self.sub.setText("")
         text = (text or "").strip()
-        if not text:
-            self._convo_empty += 1
-            if self._convo and self._convo_empty >= 3:
-                self._end_conversation("Didn't catch that. Click the mic to talk again.")
-            return                # convo poller will re-open the mic
-        self._convo_empty = 0
-        self._last_chunk_time = time.time()   # treat the reply as in-flight so we don't re-listen yet
-        self.entry.setText(text)
-        self.send()               # hands-free: your words go in and send
+        if self._convo:
+            if not text:
+                self._convo_empty += 1
+                if self._convo_empty >= 3:
+                    self._end_conversation("Didn't catch that. Click the mic to talk again.")
+                return                # convo poller re-opens the mic
+            self._convo_empty = 0
+            self._last_chunk_time = time.time()   # reply in-flight, so we don't re-listen yet
+            self.entry.setText(text)
+            self.send()               # hands-free: your words go in and send
+            return
+        if self._wake:                            # passive: only act if you said the wake word
+            if not text:
+                return
+            m = WAKE_RE.search(text)
+            if not m:
+                return                            # not addressed to Golem - keep listening
+            self._convo = True
+            self._convo_empty = 0
+            if not self.speak_on:                 # a spoken conversation needs voice back
+                self.speak_btn.setChecked(True)
+            if HAVE_MIC:
+                self.listen_btn.setChecked(True)
+            remainder = text[m.end():].strip()    # anything you said after "Hey Golem"
+            if remainder:
+                self._last_chunk_time = time.time()
+                self.entry.setText(remainder)
+                self.send()
+            else:
+                self._bubble("(listening - go ahead)", "system")
 
     def _convo_poll(self):
-        """Once Golem has finished replying and speaking, re-open the mic for your next turn."""
-        if not self._convo:
+        """Re-open the mic for the next turn once Golem has finished replying and speaking."""
+        if not self._listening():
             self._convo_timer.stop()
             return
         if self._mic.is_recording() or self._transcribe is not None:
@@ -742,23 +793,50 @@ class AgentWindow(QWidget):
             return                # Golem is speaking - don't listen to itself
         if self._speak_timer.isActive():
             return                # a reply is queued to be spoken
-        if (time.time() - self._last_chunk_time) < 1.3:
+        if self._convo and (time.time() - self._last_chunk_time) < 1.1:
             return                # Golem is still producing its reply
         self._start_listen_turn()
 
     def _end_conversation(self, msg: str = ""):
+        """End the active back-and-forth. If wake-word listening is on, drop back to passively waiting."""
         self._convo = False
-        self._convo_timer.stop()
         self._vad_timer.stop()
         try:
             self._mic.stop()
         except Exception:   # noqa: BLE001
             pass
-        self.listen_btn.setText("🎤")
-        self.listen_btn.setChecked(False)
+        if HAVE_MIC:
+            self.listen_btn.setChecked(self._wake)
+            self.listen_btn.setText("●" if self._wake else "🎤")
         self.sub.setText("")
         if msg:
             self._bubble(msg, "system")
+        if not self._wake:
+            self._convo_timer.stop()
+
+    def _stop_speech(self):
+        """Cut off Golem mid-sentence (manual interrupt) - click the mic/orb to shut it up."""
+        try:
+            if os.name == "nt":
+                import winsound
+                winsound.PlaySound(None, winsound.SND_PURGE)
+        except Exception:   # noqa: BLE001
+            pass
+
+    def _orb_req_poll(self):
+        """The orb's 'Talk to Golem' action drops a token here; toggle the conversation when it changes."""
+        try:
+            val = self._orb_req.read_text().strip()
+        except Exception:   # noqa: BLE001
+            return
+        if not val or val == self._orb_req_seen:
+            return
+        self._orb_req_seen = val
+        if not HAVE_MIC or not self._running():
+            return
+        new = not self._convo                         # orb click toggles the conversation
+        self.listen_btn.setChecked(new)               # visual only (clicked signal doesn't fire on this)
+        self._toggle_listen(new)                      # so drive it ourselves
 
     def _signal_orb_listening(self):
         """Tell the orb it's listening, so it shows a distinct state (a cool pulsing ring), not speaking."""
@@ -864,7 +942,7 @@ class AgentWindow(QWidget):
                 "QPushButton { background:transparent; border:1px solid #2a2f3a; border-radius:8px; "
                 "padding:6px 11px; font-size:15px; }"
                 " QPushButton:checked { background:#e5484d33; border-color:#e5484d; }")
-            self.listen_btn.toggled.connect(self._toggle_listen)
+            self.listen_btn.clicked.connect(self._toggle_listen)   # clicked = user only (setChecked won't loop)
             h.addWidget(self.listen_btn)
         self.appear_btn = QPushButton("🎨")
         self.appear_btn.setCursor(Qt.PointingHandCursor)
