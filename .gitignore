@@ -39,3 +39,6 @@ gen/voices/
 
 # Whisper speech-to-text engine + model (downloaded on demand at runtime, not in git)
 whisper/
+
+# Golem's persistent memory (per-user, created at runtime)
+golem_memory.json

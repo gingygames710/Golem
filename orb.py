@@ -129,6 +129,7 @@ class Orb(QWidget):
         self._sig_timer = QTimer(self)
         self._sig_timer.timeout.connect(self._check_signal)
         self._sig_timer.start(90)          # poll often enough that the speech pulse starts in time with the voice
+        QTimer.singleShot(500, lambda: self.pulse(2.2))   # a warm hello when the orb first appears
 
     # ---- geometry ----
     def _win_half(self) -> int:
@@ -348,11 +349,14 @@ class Orb(QWidget):
         now = time.monotonic()
         t = now - self._t0
         cx, cy = self.width() / 2, self.height() / 2
+        cx += math.sin(t * 0.7) * 4.0        # gentle idle float, so it feels alive instead of pinned
+        cy += math.sin(t * 0.9 + 1.3) * 5.0
         R = self.ap["size"] * 1.7
         amp = self._speak_amp(now)          # 0..1 loudness of the voice right now (pulses of light)
         speaking = now < self._speak_until
         listening = now < self._listen_until and not speaking   # hearing you (speaking wins if both)
         active = now < self._active_until or speaking or listening
+        thinking = active and not speaking and not listening     # working on a reply - shimmer the data
         self.timer.setInterval(16 if active else 40)   # 60fps when alive, 25fps idle - easy on weak PCs
 
         # gentle breathing; a little bigger/faster when active, and a sharp swell on each loud syllable
@@ -398,6 +402,8 @@ class Orb(QWidget):
                 alpha = int((50 + 180 * dn) * (0.55 + 0.45 * tw))
                 if active:
                     alpha = min(255, int(alpha * (1.25 + 0.9 * amp)))   # digits flare with the voice
+                if thinking:   # a shimmer wave sweeping around the sphere while Golem works
+                    alpha = int(alpha * (0.7 + 0.5 * (0.5 + 0.5 * math.sin(t * 3.0 + d.theta * 3.0))))
                 px = max(8, int(9 + 11 * dn))
                 col = QColor(spark_c if d.warm else digit_c)
                 col.setAlpha(max(0, min(255, alpha)))

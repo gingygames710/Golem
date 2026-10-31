@@ -461,6 +461,18 @@ class Builder(QWidget):
             self.apply_recommendation()
         if self.cfg.get("check_updates", True):  # quietly see if a newer release is out (read-only)
             self.check_for_updates(manual=False)
+        if self.cfg.get("first_run", True):       # a warm welcome the very first time, pointing at Easy Mode
+            QTimer.singleShot(400, self._welcome)
+
+    def _welcome(self):
+        QMessageBox.information(
+            self, "Welcome to Golem",
+            "Golem is your own AI that runs right here on your computer - free, private, nothing sent "
+            "anywhere.\n\n"
+            "If you're new to this, just click the blue “Easy Mode” button at the top. Golem will set "
+            "everything up for you - no terminal, no accounts - and then open a chat window where you can "
+            "talk or type.\n\n"
+            "That's it. Click Easy Mode and you're off.")
 
     # ---------------------------------------------------------------- config I/O
 

@@ -522,6 +522,8 @@ class AgentWindow(QWidget):
             self._launch_orb()
         if self._wake and HAVE_MIC:                 # listen for "Hey Golem" in the background, if enabled
             QTimer.singleShot(1500, self._start_wake)
+        if _config().get("first_run", False):       # a warm spoken hello the very first time
+            QTimer.singleShot(1400, self._first_run_greeting)
 
     def _launch_orb(self):
         """Start the ambient orb (the frozen exe if installed, else orb.py). Best-effort."""
@@ -837,6 +839,24 @@ class AgentWindow(QWidget):
         new = not self._convo                         # orb click toggles the conversation
         self.listen_btn.setChecked(new)               # visual only (clicked signal doesn't fire on this)
         self._toggle_listen(new)                      # so drive it ourselves
+
+    def _first_run_greeting(self):
+        """The very first launch: Golem introduces itself, speaks the hello, and the orb pulses a welcome."""
+        cfg = _config()
+        if not cfg.get("first_run", False):
+            return
+        cfg["first_run"] = False
+        try:
+            CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        except Exception:   # noqa: BLE001
+            pass
+        msg = (f"Hi - I'm {self.name}. I live right here on your computer, and everything we do stays on "
+               "this PC - nothing is sent anywhere. Tell me what you'd like to do, or just ask me anything.")
+        self._bubble(msg, "agent")
+        self._ping_orb(3.0)
+        if self.speak_on and piper_available():
+            self._voice_thread = VoicePlayer(_clean_for_speech(msg), self.voice_name)
+            self._voice_thread.start()
 
     def _signal_orb_listening(self):
         """Tell the orb it's listening, so it shows a distinct state (a cool pulsing ring), not speaking."""

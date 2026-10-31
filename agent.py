@@ -270,7 +270,61 @@ milestone in GAME.md is done."""
                        "\n\nThis sets your voice and attitude, not your judgement: never let it stop you from "
                        "doing the task correctly, testing your work, asking for permission, or refusing something "
                        "unsafe.")
+    mem = load_memory()
+    if mem:
+        prompt += ("\n\n--- What you remember about the user (from past conversations; use it naturally, and "
+                   "call remember(fact) to save new durable facts) ---\n- " + "\n- ".join(mem))
+    else:
+        prompt += ("\n\nYou can remember things across conversations: when you learn a durable fact or "
+                   "preference (the user's name, how they like answers), call remember(fact). Never save "
+                   "passwords, payment details or anything sensitive.")
     return prompt
+
+
+# ---------------------------------------------------------------- persistent memory (1.4.0)
+#
+# A tiny local memory so Golem isn't stateless between sessions: a list of short facts the model chooses to
+# keep (via the remember tool), loaded into the system prompt each run. Stored in the app folder (per-user),
+# never leaves the PC, capped so the prompt can't balloon.
+MEMORY_FILE = AGENT_DIR / "golem_memory.json"
+MEMORY_MAX = 60
+
+
+def load_memory() -> list:
+    try:
+        data = json.loads(MEMORY_FILE.read_text(encoding="utf-8-sig"))
+        if isinstance(data, list):
+            return [str(x) for x in data][-MEMORY_MAX:]
+    except Exception:  # noqa: BLE001 - missing/corrupt file just means no memory yet
+        pass
+    return []
+
+
+def add_memory(fact: str) -> bool:
+    fact = " ".join((fact or "").split())[:300]
+    if not fact:
+        return False
+    mem = load_memory()
+    if fact in mem:
+        return True
+    mem.append(fact)
+    mem = mem[-MEMORY_MAX:]
+    try:
+        MEMORY_FILE.write_text(json.dumps(mem, indent=2), encoding="utf-8")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def remember(fact: str) -> str:
+    """Save a short durable fact about the user for future conversations."""
+    return "Saved - I'll remember that next time." if add_memory(fact) else "Couldn't save that to memory."
+
+
+def recall() -> str:
+    """List what Golem has saved about the user."""
+    mem = load_memory()
+    return "I don't have anything saved yet." if not mem else "Here's what I remember:\n- " + "\n- ".join(mem)
 
 
 # ---------------------------------------------------------------- tools
@@ -1357,6 +1411,12 @@ TOOLS = {
         {"message": S, "title": S,
          "priority": {**S, "description": "min | low | default | high | urgent"}},
         ["message"], True)),
+    "remember": (remember, _tool(
+        "remember", "Save a short durable fact about the user or how they like things, to recall in future "
+        "conversations (e.g. their name, projects, preferences). Not for passwords or anything sensitive.",
+        {"fact": S}, ["fact"], False)),
+    "recall": (recall, _tool(
+        "recall", "List what you've saved about the user in memory.", {}, [], False)),
 }
 COMPUTER_TOOLS = {
     "screenshot": (screenshot, _tool(
@@ -1548,13 +1608,14 @@ def default_config() -> dict:
         "ollama_models_dir": "",    # optional: sets OLLAMA_MODELS so model files live off C:
         "voice": {"enabled": True, "voice": "en_US-hfc_female-medium", "wake": False},  # speak aloud; wake = "Hey Golem"
         "orb_autostart": True,      # the ambient orb is standard - launches with the agent window
+        "first_run": True,          # cleared after the first welcome, so the greeting only happens once
         "personality": "",
     }
 
 
 def enabled_tools_from(features: dict) -> set:
     """Turn the feature switches into the set of tool names to load."""
-    names = set()
+    names = {"remember", "recall"}   # memory is always available - it never touches the system
     for feature, on in features.items():
         if on and feature in FEATURE_TOOLS:
             names.update(FEATURE_TOOLS[feature])
