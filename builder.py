@@ -627,12 +627,26 @@ class Builder(QWidget):
 
     def _on_update_downloaded(self, path: str):
         self.update_now_btn.setEnabled(True)
-        if not path:
-            QMessageBox.critical(self, "Download failed", "The update could not be downloaded. Try again later.")
+        if not path or not Path(path).exists() or Path(path).stat().st_size < 1_000_000:
+            QMessageBox.critical(self, "Download failed",
+                                 "The update didn't download completely. Check your internet and try again.")
             return
         try:
-            os.startfile(path)  # launch the installer; it closes/replaces the running app
-            self.flash("Installer launched - follow its prompts. Golem will restart updated.")
+            # Close the other Golem windows first so none of their exes stay locked during the install
+            # (a locked exe is what made the update fail with a "file in use" error).
+            if os.name == "nt":
+                for exe in ("Golem.exe", "Golem-Orb.exe", "golem-core.exe"):
+                    try:
+                        subprocess.run(["taskkill", "/IM", exe, "/F"], capture_output=True,
+                                       creationflags=subprocess.CREATE_NO_WINDOW)
+                    except Exception:  # noqa: BLE001
+                        pass
+            # Launch the installer, then CLOSE the Builder too so the installer can replace its files.
+            # os.startfile launches it as an independent process, so it keeps running after we quit. The
+            # installer reopens the Builder on its Finish page.
+            os.startfile(path)
+            self.flash("Updating Golem - it will close now so the update can install, then reopen.")
+            QTimer.singleShot(1500, QApplication.quit)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Could not start the installer",
                                  f"Downloaded to {path}, but couldn't run it:\n{e}")
