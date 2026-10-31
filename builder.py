@@ -102,10 +102,20 @@ def agent_python() -> str:
     return str(venv) if venv.exists() else sys.executable
 
 
+def _ollama_cmd() -> str:
+    """Resolve ollama.exe by real path (PATH is stale right after a fresh install)."""
+    try:
+        if _agent_mod:
+            return _agent_mod.ollama_exe()
+    except Exception:  # noqa: BLE001
+        pass
+    return "ollama"
+
+
 def ollama_models() -> list:
     """Names of models already pulled into Ollama, newest first-ish. [] if Ollama isn't found."""
     try:
-        out = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=10,
+        out = subprocess.run([_ollama_cmd(), "list"], capture_output=True, text=True, timeout=10,
                              creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0))
         lines = out.stdout.strip().splitlines()[1:]  # drop the header row
         return [ln.split()[0] for ln in lines if ln.strip()]
@@ -183,8 +193,9 @@ class PullThread(QThread):
     def run(self):
         try:
             p = subprocess.Popen(
-                ["ollama", "pull", self.model],
+                [_ollama_cmd(), "pull", self.model],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                env={**os.environ, "OLLAMA_NO_CLOUD": "1"},
                 creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
             )
             for ln in p.stdout:
@@ -368,6 +379,7 @@ class Builder(QWidget):
         self.update_dl = None      # downloading the new installer
         self.update_info = None    # the latest release info once checked
         self._easy_pending_launch = False  # Easy Mode: launch the agent once the model finishes pulling
+        self._easy_pending_ollama = False  # Easy Mode: continue once Ollama finishes installing
         self.voice_test_thread = None      # running voice download/test
         self._rec = None  # the latest GPU model recommendation
         self.cfg = self.load_config()
@@ -898,46 +910,75 @@ class Builder(QWidget):
     OLLAMA_SETUP_URL = "https://ollama.com/download/OllamaSetup.exe"
 
     def install_ollama(self):
-        """Download the official OllamaSetup.exe and launch it so the user can click through setup."""
+        """Download OllamaSetup.exe and install it SILENTLY - the user never sees Ollama's own window."""
         if self.dl_thread:
             return
         ok = QMessageBox.question(
             self, "Install Ollama",
-            "This downloads the official Ollama installer (~700 MB) from ollama.com and opens it.\n\n"
-            "Follow its prompts, then come back and click 'Refresh list'. Continue?",
+            "This downloads Ollama - the free local AI engine - (~700 MB) and installs it for you in the "
+            "background. There's nothing for you to click.\n\nContinue?",
             QMessageBox.Yes | QMessageBox.No)
         if ok != QMessageBox.Yes:
             return
         dest = Path(os.environ.get("TEMP", str(AGENT_DIR))) / "OllamaSetup.exe"
         self.install_ollama_btn.setEnabled(False)
-        self.ollama_label.setText("Downloading the Ollama installer...")
+        self.ollama_label.setText("Downloading Ollama...")
         self.ollama_label.setStyleSheet("color:#2d6cdf;")
         self.dl_thread = DownloadThread(self.OLLAMA_SETUP_URL, dest)
         self.dl_thread.line.connect(lambda ln: self.ollama_label.setText(ln))
         self.dl_thread.done.connect(self._ollama_downloaded)
         self.dl_thread.start()
 
+    def _finish_ollama_setup(self):
+        """Keep Ollama local-only (no account) and close its desktop window; Golem drives the server."""
+        try:
+            if _agent_mod:
+                _agent_mod.ollama_stay_local()
+                _agent_mod.close_ollama_window()
+        except Exception:  # noqa: BLE001
+            pass
+
     def _ollama_downloaded(self, path: str):
         self.dl_thread = None
-        self.install_ollama_btn.setEnabled(True)
         if not path:
-            self.ollama_label.setText("Couldn't download Ollama. Click Get Ollama to install it manually.")
+            self.install_ollama_btn.setEnabled(True)
+            self.ollama_label.setText("Couldn't download Ollama. Check your internet and try again.")
             self.ollama_label.setStyleSheet("color:#c60;")
             return
         install_dir = self.ollama_install_edit.text().strip() if hasattr(self, "ollama_install_edit") else ""
+        args = [path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
+        if install_dir:
+            args.append(f"/DIR={install_dir}")
+        self.ollama_label.setText("Installing Ollama in the background (about a minute)...")
+        self.ollama_label.setStyleSheet("color:#2d6cdf;")
         try:
-            if install_dir:
-                # The Ollama installer takes /DIR to preset the install folder (still shows its wizard).
-                subprocess.Popen([path, f'/DIR={install_dir}'])
-                self.ollama_label.setText(f"Ollama installer opened (installing to {install_dir}) - follow "
-                                          "its steps, then click 'Refresh list'.")
-            else:
-                os.startfile(path)  # launch the installer; the user clicks through it
-                self.ollama_label.setText("Ollama installer opened - follow its steps, then click 'Refresh list'.")
-            self.ollama_label.setStyleSheet("color:#2a7;")
+            subprocess.Popen(args, creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0))
+            # poll until the server comes up, then lock it to local-only and close its window
+            self._ollama_wait = 60
+            self._ollama_poll = QTimer(self)
+            self._ollama_poll.timeout.connect(self._poll_ollama_install)
+            self._ollama_poll.start(2000)
         except Exception as e:  # noqa: BLE001
-            self.ollama_label.setText(f"Downloaded, but couldn't open the installer ({e}). It's at {path}.")
+            self.install_ollama_btn.setEnabled(True)
+            self.ollama_label.setText(f"Downloaded, but couldn't run the installer ({e}). It's at {path}.")
             self.ollama_label.setStyleSheet("color:#c60;")
+
+    def _poll_ollama_install(self):
+        self._ollama_wait -= 2
+        if ollama_running() or self._ollama_wait <= 0:
+            self._ollama_poll.stop()
+            self.install_ollama_btn.setEnabled(True)
+            self._finish_ollama_setup()   # local-only + close the Ollama window
+            if ollama_running():
+                self.ollama_label.setText("Ollama is installed and running locally. ✓")
+                self.ollama_label.setStyleSheet("color:#2a7;")
+                self.refresh_models()
+                if getattr(self, "_easy_pending_ollama", False):
+                    self._easy_pending_ollama = False
+                    self.easy_mode()   # beginner flow: carry on now that Ollama is ready
+            else:
+                self.ollama_label.setText("Ollama was installed - click 'Refresh list' in a moment.")
+                self.ollama_label.setStyleSheet("color:#c60;")
 
     # ---------------------------------------------------------------- Features tab
 
@@ -1016,14 +1057,16 @@ class Builder(QWidget):
         # 4. Save it all.
         self.save()
         # 5. Make sure the brain is actually there, then launch.
+        self._finish_ollama_setup()   # keep Ollama local-only and close its window if it's around
         if not ollama_running():
             ok = QMessageBox.question(
                 self, "Easy Mode - set up the free brain (one time)",
-                "Golem runs on a free local 'brain' called Ollama, and it isn't set up yet.\n\n"
-                "I'll download and open its installer - click Next through it, then press Easy Mode again "
-                "to finish and launch Golem. Do that now?",
+                "Golem needs its free local brain (Ollama), and it isn't set up yet.\n\n"
+                "I'll download and install it for you in the background (about 1 GB, nothing to click), "
+                "then finish setting up and launch Golem on its own. Do that now?",
                 QMessageBox.Yes | QMessageBox.No)
             if ok == QMessageBox.Yes and os.name == "nt":
+                self._easy_pending_ollama = True   # the install poller re-runs Easy Mode when Ollama is up
                 self._select_tab("Brain")
                 self.install_ollama()
             return

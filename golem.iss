@@ -3,7 +3,7 @@
 ; Compile with:  ISCC.exe golem.iss   ->  installer\Golem-setup-<version>.exe
 
 #define MyAppName "Golem"
-#define MyAppVersion "1.0.1"
+#define MyAppVersion "1.0.2"
 #define MyAppPublisher "Golem"
 #define BuilderExe "Golem-Builder.exe"
 #define AgentExe "Golem.exe"
@@ -113,7 +113,15 @@ begin
   if (CurStep = ssPostInstall) and OllamaWanted then
   begin
     if FileExists(ExpandConstant('{tmp}\OllamaSetup.exe')) then
+    begin
       Exec(ExpandConstant('{tmp}\OllamaSetup.exe'), '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART',
            '', SW_SHOW, ewWaitUntilTerminated, ResultCode);
+      // Keep Ollama fully local (no cloud / no account) and don't let its window bug the user - Golem
+      // drives the local server itself, so the sign-in / 'run it in a terminal' screen is never needed.
+      ForceDirectories(ExpandConstant('{userprofile}\.ollama'));
+      SaveStringToFile(ExpandConstant('{userprofile}\.ollama\server.json'), '{"disable_ollama_cloud": true}', False);
+      RegWriteStringValue(HKCU, 'Environment', 'OLLAMA_NO_CLOUD', '1');
+      Exec('taskkill.exe', '/IM "ollama app.exe" /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    end;
   end;
 end;
