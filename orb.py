@@ -100,6 +100,10 @@ class Orb(QWidget):
         self.locked = True                 # click-through (can't be dragged) until unlocked from the menu
         self._drag = None
         self._active_until = 0.0           # brighten the orb until this time (set when Golem is active)
+        self._speak_env = []               # per-bucket loudness (0..1) of the voice currently playing
+        self._speak_start = 0.0            # monotonic time the voice began
+        self._speak_interval = 0.06        # seconds per envelope bucket
+        self._speak_until = 0.0            # monotonic time the voice ends - orb pulses with light until then
         self._glow = None                  # cached glow pixmap
         self._glow_key = None
         self._fonts = {}                   # size -> QFont cache, so we don't rebuild fonts each frame
@@ -208,13 +212,55 @@ class Orb(QWidget):
         self._active_until = time.monotonic() + seconds
 
     def _check_signal(self):
-        """Read the agent's activity signal (an epoch deadline) and convert it to our monotonic clock."""
+        """Read the agent's activity signal and convert it to our monotonic clock.
+
+        Line 1 is an epoch deadline (Golem is active until then). An optional second line,
+        'SPEAK <start_epoch> <interval> <amp0> <amp1> ...', carries the loudness envelope of the voice
+        now playing, so the orb can pulse with light exactly in time with the speech - no mouth, just the
+        core flaring brighter on each syllable."""
         try:
-            remaining = float(self._signal.read_text().strip()) - time.time()
+            text = self._signal.read_text().strip()
         except Exception:
             return
+        if not text:
+            return
+        lines = text.splitlines()
+        mono_now, wall_now = time.monotonic(), time.time()
+        try:
+            remaining = float(lines[0].strip()) - wall_now
+        except Exception:
+            remaining = 0.0
         if remaining > 0:
-            self._active_until = max(self._active_until, time.monotonic() + min(remaining, 3.0))
+            self._active_until = max(self._active_until, mono_now + min(remaining, 3.0))
+        for ln in lines[1:]:
+            if not ln.startswith("SPEAK "):
+                continue
+            parts = ln.split()
+            try:
+                start_epoch = float(parts[1])
+                interval = float(parts[2])
+                amps = [float(x) for x in parts[3:]]
+            except (IndexError, ValueError):
+                continue
+            if not amps or interval <= 0:
+                continue
+            start_mono = mono_now + (start_epoch - wall_now)   # same instant, our clock
+            end_mono = start_mono + len(amps) * interval
+            if end_mono <= mono_now:
+                continue                                        # already finished - ignore stale envelope
+            self._speak_env = amps
+            self._speak_start = start_mono
+            self._speak_interval = interval
+            self._speak_until = end_mono
+
+    def _speak_amp(self, now: float) -> float:
+        """Loudness (0..1) of the voice at this instant, or 0 when nothing is playing."""
+        if not self._speak_env or now >= self._speak_until or now < self._speak_start:
+            return 0.0
+        i = int((now - self._speak_start) / self._speak_interval)
+        if 0 <= i < len(self._speak_env):
+            return max(0.0, min(1.0, self._speak_env[i]))
+        return 0.0
 
     # ---- appearance ----
     def apply_orb(self, ap: dict):
@@ -276,10 +322,12 @@ class Orb(QWidget):
         t = now - self._t0
         cx, cy = self.width() / 2, self.height() / 2
         R = self.ap["size"] * 1.7
-        active = now < self._active_until
+        amp = self._speak_amp(now)          # 0..1 loudness of the voice right now (pulses of light)
+        speaking = now < self._speak_until
+        active = now < self._active_until or speaking
 
-        # gentle breathing; a little bigger/faster when active
-        breathe = 1.0 + (0.10 if active else 0.055) * math.sin(t * (2.6 if active else 1.7))
+        # gentle breathing; a little bigger/faster when active, and a sharp swell on each loud syllable
+        breathe = 1.0 + (0.10 if active else 0.055) * math.sin(t * (2.6 if active else 1.7)) + 0.32 * amp
         spin = t * (self.ap["speed"] / 100.0) * (1.6 if active else 1.0)
         tilt = 0.42
         Reff = R * breathe
@@ -320,7 +368,7 @@ class Orb(QWidget):
                 tw = 0.5 + 0.5 * math.sin(t * 1.9 + d.phase)  # twinkle
                 alpha = int((50 + 180 * dn) * (0.55 + 0.45 * tw))
                 if active:
-                    alpha = min(255, int(alpha * 1.25))
+                    alpha = min(255, int(alpha * (1.25 + 0.9 * amp)))   # digits flare with the voice
                 px = max(8, int(9 + 11 * dn))
                 col = QColor(spark_c if d.warm else digit_c)
                 col.setAlpha(max(0, min(255, alpha)))
@@ -333,6 +381,12 @@ class Orb(QWidget):
         gs = self.ap["size"] * 4 * breathe
         p.drawPixmap(QPointF(cx - gs / 2, cy - gs / 2),
                      gp.scaled(int(gs), int(gs), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        if amp > 0.05:                    # a flare of light on each loud syllable - the orb "speaking"
+            bloom = gs * (1.0 + 0.55 * amp)
+            p.setOpacity(0.40 * amp)
+            p.drawPixmap(QPointF(cx - bloom / 2, cy - bloom / 2),
+                         gp.scaled(int(bloom), int(bloom), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            p.setOpacity(1.0)
         draw_digits(front=True)           # digits in front of the core
         p.end()
 

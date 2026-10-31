@@ -32,3 +32,7 @@ installer/
 
 # Undo snapshots the agent makes before changing a file
 .golem_backups/
+
+# Bundled Piper voice engine + models (downloaded at build time, shipped in the installer, not in git)
+piper/
+gen/voices/

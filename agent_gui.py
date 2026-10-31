@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
@@ -180,52 +181,57 @@ class Reader(QThread):
         self.ended.emit()
 
 
-# ---------------------------------------------------------------- voice (0.9.0)
+# ---------------------------------------------------------------- voice (0.9.0; standalone Piper in 1.0.5)
 #
-# The agent can read its replies aloud with the same local Piper TTS the agent already uses
-# (generate_speech), run from the gen/ environment. Pretrained voices only for now - the user picks a
-# voice (and Piper downloads it on first use); clone-from-your-own-sample is a planned heavier add-on.
-GEN_DIR = AGENT_DIR / "gen"
-VOICES_DIR = GEN_DIR / "voices"
+# The agent reads its replies aloud with the self-contained Piper binary (piper.exe - NO Python). The
+# Builder's Add-ons -> Voice installs the engine + default voice on a clean machine; here we just use it,
+# and fall back to downloading a voice model on demand if the user picked one that isn't here yet.
+PIPER_DIR = AGENT_DIR / "piper"
+PIPER_VOICES_DIR = PIPER_DIR / "voices"
+PIPER_EXE = PIPER_DIR / ("piper.exe" if os.name == "nt" else "piper")
+PIPER_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 DEFAULT_VOICE = "en_US-lessac-medium"
 
 
-def gen_python() -> str:
-    p = GEN_DIR / ".venv" / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
-    return str(p) if p.exists() else ""
-
-
 def piper_available() -> bool:
-    return bool(gen_python())
+    """True when the standalone Piper binary is installed - no Python needed."""
+    return PIPER_EXE.exists()
 
 
-_VOICE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_VOICE_RE = re.compile(r"^[a-z]{2,3}_[A-Z]{2}-[a-z0-9_]+-(x_low|low|medium|high)$")
 
 
 def _safe_voice(voice: str) -> str:
-    """Voice names are used in a path and passed to Piper; keep them to a safe charset so a crafted
-    name can't escape the voices folder. Fall back to the default if it looks wrong."""
+    """Voice names go into a path and a URL; keep them to Piper's shape so a crafted name can't escape
+    the voices folder. Fall back to the default if it looks wrong."""
     v = (voice or "").strip()
     return v if _VOICE_RE.match(v) else DEFAULT_VOICE
 
 
+def _voice_url(voice: str, ext: str) -> str:
+    """HuggingFace URL for a voice file, derived from the Piper voice name."""
+    lang, speaker, quality = voice.split("-", 2)
+    return f"{PIPER_VOICES_BASE}/{lang.split('_')[0]}/{lang}/{speaker}/{quality}/{voice}{ext}"
+
+
 def ensure_voice(voice: str) -> bool:
-    """Make sure the Piper voice model is downloaded (Piper 1.3+ no longer fetches it during synth).
-    Returns True when the voice is present and usable."""
+    """Make sure the voice model (.onnx + .onnx.json) is downloaded. True when present and usable."""
     voice = _safe_voice(voice)
-    gp = gen_python()
-    if not gp:
-        return False
-    if (VOICES_DIR / f"{voice}.onnx").exists():
+    onnx = PIPER_VOICES_DIR / f"{voice}.onnx"
+    cfg = PIPER_VOICES_DIR / f"{voice}.onnx.json"
+    if onnx.exists() and cfg.exists():
         return True
     try:
-        VOICES_DIR.mkdir(parents=True, exist_ok=True)
-        subprocess.run([gp, "-m", "piper.download_voices", voice, "--download-dir", str(VOICES_DIR)],
-                       capture_output=True, text=True, timeout=600, cwd=str(GEN_DIR),
-                       creationflags=CREATE_NO_WINDOW)
+        PIPER_VOICES_DIR.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(_voice_url(voice, ".onnx.json"), cfg)
+        urllib.request.urlretrieve(_voice_url(voice, ".onnx"), onnx)
     except Exception:
-        pass
-    return (VOICES_DIR / f"{voice}.onnx").exists()
+        try:
+            onnx.unlink(missing_ok=True)   # don't leave a half file that looks installed
+        except Exception:
+            pass
+        return False
+    return onnx.exists() and cfg.exists()
 
 
 _MD = re.compile(r"[`*#_>~\[\]]|\(https?://[^)]+\)")
@@ -241,6 +247,49 @@ def _clean_for_speech(text: str) -> str:
     return t
 
 
+def _wav_envelope(path: Path, bucket: float = 0.06):
+    """Return (duration_seconds, [loudness 0..1 per bucket]) for a 16-bit PCM WAV - the shape of the
+    voice, so the orb can pulse its light in time with the speech."""
+    try:
+        import wave
+        import array
+        with wave.open(str(path), "rb") as w:
+            rate, ch, sw, frames = w.getframerate(), w.getnchannels(), w.getsampwidth(), w.getnframes()
+            raw = w.readframes(frames)
+    except Exception:
+        return 0.0, []
+    dur = frames / rate if rate else 0.0
+    if sw != 2 or rate <= 0:                 # Piper emits 16-bit PCM; skip the envelope for anything else
+        return dur, []
+    samples = array.array("h")
+    samples.frombytes(raw)
+    if ch > 1:
+        samples = samples[::ch]              # one channel is plenty for a loudness envelope
+    per = max(1, int(rate * bucket))
+    amps = []
+    for i in range(0, len(samples), per):
+        chunk = samples[i:i + per]
+        if not chunk:
+            break
+        amps.append((sum(v * v for v in chunk) / len(chunk)) ** 0.5)
+    peak = max(amps) if amps else 0.0
+    amps = [round((a / peak) ** 0.7, 3) for a in amps] if peak else []   # gamma lifts quiet syllables
+    return dur, amps
+
+
+def _signal_orb_speaking(dur: float, amps: list, bucket: float = 0.06):
+    """Tell the ambient orb the voice is playing and hand it the loudness envelope, so it pulses with
+    light in sync. Best-effort: the orb may not be running."""
+    try:
+        now = time.time()
+        lines = [str(now + (dur if dur > 0 else 2.5) + 0.25)]
+        if amps:
+            lines.append("SPEAK %.3f %.3f %s" % (now, bucket, " ".join(str(a) for a in amps)))
+        (Path(tempfile.gettempdir()) / "golem_orb_signal").write_text("\n".join(lines))
+    except Exception:
+        pass
+
+
 class VoicePlayer(QThread):
     """Synthesize text with Piper and play it, off the UI thread so the window never freezes."""
     done = Signal()
@@ -252,18 +301,20 @@ class VoicePlayer(QThread):
     def run(self):
         wav = None
         try:
-            gp = gen_python()
-            if not gp or not self.text.strip():
+            if not piper_available() or not self.text.strip():
                 return
-            ensure_voice(self.voice)   # download the voice model the first time it's used
-            if not (VOICES_DIR / f"{self.voice}.onnx").exists():
+            if not ensure_voice(self.voice):   # download the voice model the first time it's used
                 return
+            model = PIPER_VOICES_DIR / f"{self.voice}.onnx"
+            line = " ".join(self.text.split())   # one utterance - Piper treats each input line separately
             wav = Path(tempfile.gettempdir()) / f"golem-say-{int(time.time() * 1000)}.wav"
-            subprocess.run([gp, "-m", "piper", "-m", self.voice, "-f", str(wav), "--data-dir", str(VOICES_DIR)],
-                           input=self.text, text=True, capture_output=True, encoding="utf-8",
-                           errors="replace", timeout=300, cwd=str(GEN_DIR),
+            subprocess.run([str(PIPER_EXE), "-m", str(model), "-f", str(wav)],
+                           input=line, text=True, capture_output=True, encoding="utf-8",
+                           errors="replace", timeout=300, cwd=str(PIPER_DIR),
                            creationflags=CREATE_NO_WINDOW)
             if wav.exists() and wav.stat().st_size > 100 and os.name == "nt":
+                dur, amps = _wav_envelope(wav)          # the voice's shape, for the orb to pulse with
+                _signal_orb_speaking(dur, amps)         # hand it to the orb just before the sound starts
                 import winsound
                 winsound.PlaySound(str(wav), winsound.SND_FILENAME)
         except Exception:
@@ -293,7 +344,7 @@ class AgentWindow(QWidget):
         self.setStyleSheet(self._window_qss())
 
         vc = _config().get("voice") or {}
-        self.speak_on = bool(vc.get("enabled"))
+        self.speak_on = bool(vc.get("enabled", True))
         self.voice_name = vc.get("voice") or DEFAULT_VOICE
         self._voice_thread = None
         self._spoken_text = ""        # last text spoken aloud, so a reply isn't read twice
@@ -429,8 +480,8 @@ class AgentWindow(QWidget):
         self.speak_on = on
         if on and not piper_available() and not self._warned_no_piper:
             self._warned_no_piper = True
-            self._bubble("To hear replies, install the image & sound pack in the Builder (Add-ons tab) - "
-                         "it includes the Piper voice.", "system")
+            self._bubble("To hear replies, open the Golem Builder, go to the Add-ons tab, and click "
+                         "Install under Voice (a quick one-time download, no setup).", "system")
         self._save_voice_cfg()
 
     def _save_voice_cfg(self):

@@ -20,6 +20,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -985,31 +986,127 @@ def generate_audio(prompt: str, path: str, seconds: float = 8.0) -> str:
     return f"{stdout}\nSaved audio to {out}."
 
 
+# ---------------------------------------------------------------- standalone Piper voice (1.0.5)
+#
+# Voice used to need a full Python env (gen/.venv) just for Piper, which a normal user never has, so
+# the install failed with "is Python 3.13 installed?". Instead we use the self-contained Piper binary
+# (piper.exe + espeak data - NO Python) and pull voice models straight from HuggingFace. One click in
+# the Builder (Add-ons -> Voice) sets it up, and it works on a clean machine.
+PIPER_DIR = AGENT_DIR / "piper"                       # holds piper.exe and its support files
+PIPER_VOICES_DIR = PIPER_DIR / "voices"               # the .onnx / .onnx.json voice models live here
+PIPER_EXE = PIPER_DIR / ("piper.exe" if IS_WINDOWS else "piper")
+PIPER_BIN_URL = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip"
+PIPER_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+DEFAULT_VOICE = "en_US-lessac-medium"
+# Piper voice names look like "en_US-lessac-medium"; keep to that shape so a crafted name can't build a
+# weird path or URL.
+_VOICE_NAME_RE = re.compile(r"^[a-z]{2,3}_[A-Z]{2}-[a-z0-9_]+-(x_low|low|medium|high)$")
+
+
+def safe_voice(voice: str) -> str:
+    v = (voice or "").strip()
+    return v if _VOICE_NAME_RE.match(v) else DEFAULT_VOICE
+
+
+def piper_installed() -> bool:
+    """True when the standalone Piper binary is present - no Python needed."""
+    return PIPER_EXE.exists()
+
+
+def _voice_url(voice: str, ext: str) -> str:
+    """HuggingFace URL for a voice file, derived from the Piper voice name.
+    en_US-lessac-medium -> .../en/en_US/lessac/medium/en_US-lessac-medium.onnx"""
+    lang, speaker, quality = voice.split("-", 2)      # en_US, lessac, medium
+    family = lang.split("_")[0]                        # en
+    return f"{PIPER_VOICES_BASE}/{family}/{lang}/{speaker}/{quality}/{voice}{ext}"
+
+
+def ensure_piper(progress=None) -> bool:
+    """Download + unpack the self-contained Piper binary if it isn't here yet. Windows only for now."""
+    if piper_installed():
+        return True
+    if not IS_WINDOWS:
+        return False
+    zip_path = PIPER_DIR / "_piper.zip"
+    try:
+        PIPER_DIR.mkdir(parents=True, exist_ok=True)
+        if progress:
+            progress("Downloading the voice engine (about 22 MB, once)...")
+        urllib.request.urlretrieve(PIPER_BIN_URL, zip_path)
+        if progress:
+            progress("Unpacking the voice engine...")
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(PIPER_DIR)
+        # The zip may unpack to piper/piper/piper.exe - flatten so PIPER_EXE is piper/piper.exe.
+        if not PIPER_EXE.exists():
+            hits = list(PIPER_DIR.rglob(PIPER_EXE.name))
+            if hits:
+                src = hits[0].parent
+                for item in src.iterdir():
+                    shutil.move(str(item), str(PIPER_DIR / item.name))
+                if src != PIPER_DIR:
+                    shutil.rmtree(src, ignore_errors=True)   # drop the now-empty nested folder
+    except Exception:  # noqa: BLE001 - offline / blocked download, just report not-installed
+        return False
+    finally:
+        try:
+            zip_path.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+    return piper_installed()
+
+
+def ensure_piper_voice(voice: str, progress=None) -> bool:
+    """Download a voice model (.onnx + .onnx.json) from HuggingFace if it isn't here yet."""
+    voice = safe_voice(voice)
+    onnx = PIPER_VOICES_DIR / f"{voice}.onnx"
+    cfg = PIPER_VOICES_DIR / f"{voice}.onnx.json"
+    if onnx.exists() and cfg.exists():
+        return True
+    try:
+        PIPER_VOICES_DIR.mkdir(parents=True, exist_ok=True)
+        if progress:
+            progress(f"Downloading the {voice} voice (about 60 MB, once)...")
+        urllib.request.urlretrieve(_voice_url(voice, ".onnx.json"), cfg)
+        urllib.request.urlretrieve(_voice_url(voice, ".onnx"), onnx)
+    except Exception:  # noqa: BLE001
+        onnx.unlink(missing_ok=True)   # don't leave a half file that looks installed
+        return False
+    return onnx.exists() and cfg.exists()
+
+
+def piper_say(text: str, out: Path, voice: str = DEFAULT_VOICE) -> tuple[bool, str]:
+    """Synthesize text to a WAV with the standalone Piper. Returns (ok, error_message)."""
+    voice = safe_voice(voice)
+    if not piper_installed():
+        return False, "The voice engine isn't installed yet (Golem Builder -> Add-ons -> Voice)."
+    if not ensure_piper_voice(voice):
+        return False, f"Couldn't download the {voice} voice model."
+    model = PIPER_VOICES_DIR / f"{voice}.onnx"
+    line = " ".join((text or "").split())   # one utterance: Piper treats each input line separately
+    try:
+        p = subprocess.run([str(PIPER_EXE), "-m", str(model), "-f", str(out)],
+                           input=line, text=True, capture_output=True, encoding="utf-8",
+                           errors="replace", timeout=300, cwd=str(PIPER_DIR),
+                           creationflags=CREATE_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return False, "Speech timed out."
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
+    if p.returncode != 0 or not out.exists():
+        return False, (p.stderr or p.stdout or "Piper failed").strip()
+    return True, ""
+
+
 def generate_speech(text: str, path: str, voice: str = "en_US-lessac-medium") -> str:
-    """Turn text into speech with Piper (local TTS), saved as a .wav."""
+    """Turn text into speech with Piper (local TTS, no Python), saved as a .wav."""
     out = _resolve(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    voices = GEN_DIR / "voices"
-    voices.mkdir(parents=True, exist_ok=True)
-    try:
-        # Piper 1.3+ no longer auto-downloads the voice during synth, so fetch it first if missing.
-        if not (voices / f"{voice}.onnx").exists():
-            subprocess.run([_gen_python(), "-m", "piper.download_voices", voice, "--download-dir", str(voices)],
-                           capture_output=True, text=True, timeout=600, cwd=str(GEN_DIR))
-        p = subprocess.run([_gen_python(), "-m", "piper", "-m", voice, "-f", str(out), "--data-dir", str(voices)],
-                           input=text, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=600, cwd=str(GEN_DIR))
-    except subprocess.TimeoutExpired:
-        return "Speech generation timed out after 600s."
-    except FileNotFoundError:
-        return f"Could not run Python for speech generation in {GEN_DIR}."
-    if p.returncode != 0:
-        msg = (p.stderr or p.stdout).strip()
-        if "No module named" in msg or "ModuleNotFoundError" in msg:
-            return ("Piper TTS is not installed. In the gen environment run:\n"
-                    "  gen\\.venv\\Scripts\\pip install piper-tts")
-        return f"Speech generation failed: {msg}"
-    return f"Saved speech to {out}."
+    if not piper_installed() and not ensure_piper():
+        return ("The voice engine isn't installed. Open the Golem Builder, go to the Add-ons tab, and "
+                "click Install under Voice.")
+    ok, err = piper_say(text, out, voice)
+    return f"Saved speech to {out}." if ok else f"Speech generation failed: {err}"
 
 
 def _ntfy_topic() -> str | None:
@@ -1373,7 +1470,7 @@ def default_config() -> dict:
         "check_updates": True,
         "ollama_install_dir": "",   # optional: pass to the Ollama installer's /DIR (keep it off C:)
         "ollama_models_dir": "",    # optional: sets OLLAMA_MODELS so model files live off C:
-        "voice": {"enabled": False, "voice": "en_US-lessac-medium"},  # agent window reads replies aloud (Piper)
+        "voice": {"enabled": True, "voice": "en_US-lessac-medium"},  # agent reads replies aloud (Piper, bundled)
         "orb_autostart": True,      # the ambient orb is standard - launches with the agent window
         "personality": "",
     }

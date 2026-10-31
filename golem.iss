@@ -3,7 +3,7 @@
 ; Compile with:  ISCC.exe golem.iss   ->  installer\Golem-setup-<version>.exe
 
 #define MyAppName "Golem"
-#define MyAppVersion "1.0.4"
+#define MyAppVersion "1.0.5"
 #define MyAppPublisher "Golem"
 #define BuilderExe "Golem-Builder.exe"
 #define AgentExe "Golem.exe"
@@ -43,6 +43,9 @@ Source: "dist\{#CoreExe}";    DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\{#OrbExe}";     DestDir: "{app}"; Flags: ignoreversion
 Source: "icon.ico";           DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md";          DestDir: "{app}"; Flags: ignoreversion isreadme
+; The self-contained Piper voice engine + the default voice, so Golem can speak the moment it's installed
+; - no Python, no download, works offline. Extra voices still download on demand from the Builder.
+Source: "piper\*";            DestDir: "{app}\piper"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Golem Builder";        Filename: "{app}\{#BuilderExe}"

@@ -216,13 +216,15 @@ default** puts it back. It's purely look-and-feel — nothing about what the age
 
 ## Voice
 
-Golem can **read its replies out loud** using the same free local Piper voices as the image & sound pack
-(install that first, on the Builder's Add-ons tab). Then:
+Golem can **read its replies out loud**, and it speaks **through the orb** — the orb pulses with light in
+time with the speech (a flare on each loud syllable; no mouth, just light). Voice uses a small
+**self-contained engine — no Python, no account, all local** — so it works on a fresh PC:
 
+- On the Builder's **Add-ons → Voice** section, pick a voice and click **Install** (or **Install & test**
+  to hear it). It's a one-time ~80 MB download — the Piper engine plus your chosen voice. Browse and
+  preview more at the [Piper samples page](https://rhasspy.github.io/piper-samples/) and type any voice name.
 - In the agent window, click the **🔊** button in the header to toggle speaking on or off.
-- On the Builder's **Add-ons → Voice** section, pick a voice and click **Download & test** to hear it
-  (the voice downloads once, ~60 MB). Browse and preview more at the
-  [Piper samples page](https://rhasspy.github.io/piper-samples/) and type any voice name.
+- Keep the ambient orb running (it's on by default) to see Golem speak in pulses of light.
 
 It all runs locally — nothing is sent anywhere. Only use voices you're allowed to; **cloning a voice from
 your own recording is a planned add-on.**
@@ -231,7 +233,8 @@ your own recording is a planned add-on.**
 
 Golem's ambient presence: a floating **ball of data** — a glowing core with 1s and 0s orbiting it in
 3D — that sits on your desktop, always on top and **click-through** (your clicks pass right through it, so
-it never gets in the way). It **breathes** gently and **pulses when Golem is responding or speaking**.
+it never gets in the way). It **breathes** gently, **pulses when Golem is responding**, and **flares with
+light in time with the voice** when Golem speaks — so the orb looks like it's talking.
 
 Launch it from the Builder's **Add-ons → Ambient orb → Launch orb** (or tick *Start it with the agent*),
 or run `Golem-Orb.exe`. Control it from its **tray icon**:

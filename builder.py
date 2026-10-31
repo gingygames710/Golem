@@ -318,49 +318,51 @@ class UpdateCheckThread(QThread):
             self.result.emit({"ok": False, "error": str(e)})
 
 
-class VoiceTestThread(QThread):
-    """Download a Piper voice if needed, synthesize a short line, and play it - all off the UI thread."""
+class VoiceSetupThread(QThread):
+    """Install the self-contained Piper engine + a voice (NO Python), then play a test line - off-thread.
+    This is the one-click, works-on-a-clean-machine path the Add-ons Voice toggle uses."""
     line = Signal(str)
     done = Signal(bool)
 
-    def __init__(self, voice: str):
+    def __init__(self, voice: str, test: bool = True):
         super().__init__()
-        v = (voice or "").strip()
-        self.voice = v if re.match(r"^[A-Za-z0-9_-]+$", v) else "en_US-lessac-medium"
+        self.voice = (voice or "").strip()
+        self.test = test
 
     def run(self):
-        gp = gen_python()
-        if not gp:
-            self.line.emit("Install the image & sound pack above first (it includes the Piper voice).")
+        if not _agent_mod:
+            self.line.emit("Voice setup isn't available in this build.")
             self.done.emit(False)
             return
-        gendir = AGENT_DIR / "gen"
-        voices = gendir / "voices"
-        voices.mkdir(parents=True, exist_ok=True)
-        onnx = voices / f"{self.voice}.onnx"
-        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         try:
-            if not onnx.exists():
-                self.line.emit(f"Downloading voice '{self.voice}' (about 60 MB, once)...")
-                subprocess.run([gp, "-m", "piper.download_voices", self.voice, "--download-dir", str(voices)],
-                               capture_output=True, text=True, timeout=600, cwd=str(gendir), creationflags=flags)
-            if not onnx.exists():
+            if not _agent_mod.ensure_piper(progress=self.line.emit):
+                self.line.emit("Couldn't download the voice engine (no internet?). Try again later.")
+                self.done.emit(False)
+                return
+            if not _agent_mod.ensure_piper_voice(self.voice, progress=self.line.emit):
                 self.line.emit("Couldn't download that voice - check the name on the Piper samples page.")
                 self.done.emit(False)
                 return
-            self.line.emit("Playing a test line...")
-            import tempfile
-            wav = Path(tempfile.gettempdir()) / "golem-voicetest.wav"
-            subprocess.run([gp, "-m", "piper", "-m", self.voice, "-f", str(wav), "--data-dir", str(voices)],
-                           input="Hello, this is your Golem voice.", text=True, capture_output=True,
-                           timeout=300, cwd=str(gendir), creationflags=flags)
-            if wav.exists() and os.name == "nt":
-                import winsound
-                winsound.PlaySound(str(wav), winsound.SND_FILENAME)
-            self.line.emit(f"Voice '{self.voice}' is ready. Tick the box and Save to use it.")
+            if self.test:
+                self.line.emit("Playing a test line...")
+                import tempfile
+                wav = Path(tempfile.gettempdir()) / "golem-voicetest.wav"
+                ok, err = _agent_mod.piper_say("Hello, this is your Golem voice.", wav, self.voice)
+                if ok and wav.exists() and os.name == "nt":
+                    import winsound
+                    winsound.PlaySound(str(wav), winsound.SND_FILENAME)
+                try:
+                    wav.unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass
+                if not ok:
+                    self.line.emit(f"Voice installed, but the test line failed: {err}")
+                    self.done.emit(True)
+                    return
+            self.line.emit(f"Voice '{_agent_mod.safe_voice(self.voice)}' is ready. Tick the box and Save to use it.")
             self.done.emit(True)
         except Exception as e:  # noqa: BLE001
-            self.line.emit(f"Voice test failed: {e}")
+            self.line.emit(f"Voice setup failed: {e}")
             self.done.emit(False)
 
 
@@ -1120,20 +1122,28 @@ class Builder(QWidget):
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Could not launch the orb", str(e))
 
-    def test_voice(self):
+    def _voice_installed(self) -> bool:
+        if _agent_mod:
+            return _agent_mod.piper_installed()
+        return (AGENT_DIR / "piper" / ("piper.exe" if os.name == "nt" else "piper")).exists()
+
+    def setup_voice(self, test: bool = True):
         if getattr(self, "voice_test_thread", None):
             return
         v = self.voice_combo.currentText().strip() or "en_US-lessac-medium"
+        self.voice_install_btn.setEnabled(False)
         self.voice_test_btn.setEnabled(False)
-        self.voice_log.setText("Setting up the voice...")
-        self.voice_test_thread = VoiceTestThread(v)
+        self.voice_log.setText("Setting up the voice (one-time download)...")
+        self.voice_test_thread = VoiceSetupThread(v, test=test)
         self.voice_test_thread.line.connect(self.voice_log.setText)
-        self.voice_test_thread.done.connect(self._voice_test_done)
+        self.voice_test_thread.done.connect(self._voice_setup_done)
         self.voice_test_thread.start()
 
-    def _voice_test_done(self, ok: bool):
+    def _voice_setup_done(self, ok: bool):
+        self.voice_install_btn.setEnabled(True)
         self.voice_test_btn.setEnabled(True)
         self.voice_test_thread = None
+        self._refresh_addon_status()
 
     def apply_profile(self, pid: str):
         prof = PROFILES.get(pid, {})
@@ -1366,9 +1376,12 @@ class Builder(QWidget):
         rg.addLayout(rrow)
         lay.addWidget(rea_box)
 
-        voice_box = QGroupBox("Voice - have the agent speak its replies")
+        voice_box = QGroupBox("Voice - have Golem speak its replies")
         vg = QVBoxLayout(voice_box)
-        self.voice_check = QCheckBox("Read the agent's replies out loud")
+        vg.addWidget(QLabel("Golem speaks through the orb, which pulses with light as it talks. Uses a "
+                            "small self-contained voice engine - no Python, no account, about 80 MB the "
+                            "first time. One click below; works on a fresh PC."))
+        self.voice_check = QCheckBox("Read Golem's replies out loud")
         vg.addWidget(self.voice_check)
         vrow = QHBoxLayout()
         vrow.addWidget(QLabel("Voice:"))
@@ -1376,10 +1389,16 @@ class Builder(QWidget):
         self.voice_combo.setEditable(True)
         self.voice_combo.addItems(PIPER_VOICES)
         vrow.addWidget(self.voice_combo, 1)
-        self.voice_test_btn = QPushButton("Download & test")
-        self.voice_test_btn.clicked.connect(self.test_voice)
+        self.voice_install_btn = QPushButton("Install voice")
+        self.voice_install_btn.clicked.connect(lambda: self.setup_voice(test=False))
+        vrow.addWidget(self.voice_install_btn)
+        self.voice_test_btn = QPushButton("Install && test")
+        self.voice_test_btn.clicked.connect(lambda: self.setup_voice(test=True))
         vrow.addWidget(self.voice_test_btn)
         vg.addLayout(vrow)
+        self.voice_status = QLabel("")
+        self.voice_status.setStyleSheet("color:#888;")
+        vg.addWidget(self.voice_status)
         self.voice_log = QLabel("")
         self.voice_log.setStyleSheet("color:#888;")
         self.voice_log.setWordWrap(True)
@@ -1387,10 +1406,9 @@ class Builder(QWidget):
         vbrowse = QPushButton("Browse & hear more voices")
         vbrowse.clicked.connect(lambda: webbrowser.open("https://rhasspy.github.io/piper-samples/"))
         vg.addWidget(vbrowse)
-        vnote = QLabel("Uses the free local Piper voices from the image & sound pack (install that above "
-                       "first). Pick a voice and Download & test to hear it; the agent window also has a "
-                       "speaker button to toggle speaking. Only use voices you're allowed to - uploading "
-                       "your own voice sample to clone is a planned add-on.")
+        vnote = QLabel("Pick a voice and Install (or Install & test to hear it now). The agent window's "
+                       "speaker button toggles speaking too. Only use voices you're allowed to - cloning "
+                       "your own voice from a sample is a planned add-on.")
         vnote.setStyleSheet("color:#888;")
         vnote.setWordWrap(True)
         vg.addWidget(vnote)
@@ -1457,6 +1475,9 @@ class Builder(QWidget):
         on = self._rea_enabled()
         self.rea_status.setText("Enabled." if on else "Not enabled.")
         self.rea_btn.setText("Disable REA tools" if on else "Enable REA tools")
+        if hasattr(self, "voice_status"):
+            self.voice_status.setText("Voice engine installed." if self._voice_installed()
+                                      else "Not installed yet - click Install.")
 
     def install_gen(self):
         if self.addon_thread:
@@ -1536,7 +1557,7 @@ class Builder(QWidget):
         self.update_check_box.setChecked(bool(c.get("check_updates", True)))
         vc = c.get("voice") or {}
         if getattr(self, "voice_check", None) is not None:
-            self.voice_check.setChecked(bool(vc.get("enabled", False)))
+            self.voice_check.setChecked(bool(vc.get("enabled", True)))
         if getattr(self, "voice_combo", None) is not None:
             self.voice_combo.setCurrentText(vc.get("voice", "en_US-lessac-medium"))
         if getattr(self, "orb_autostart_check", None) is not None:
