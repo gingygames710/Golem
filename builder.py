@@ -535,6 +535,7 @@ class Builder(QWidget):
                 "voice": (self.voice_combo.currentText().strip() if getattr(self, "voice_combo", None) else "")
                          or "en_US-hfc_female-medium",
                 "wake": self.stt_wake_check.isChecked() if getattr(self, "stt_wake_check", None) else False,
+                "barge": (self.cfg.get("voice") or {}).get("barge", False),   # preserve the chat-window toggle
             },
             "orb_autostart": self.orb_autostart_check.isChecked() if getattr(self, "orb_autostart_check", None) else False,
             "routines": list(self._routines),

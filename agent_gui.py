@@ -40,6 +40,7 @@ VAD_START_RMS = 450      # above this = you're talking
 VAD_STOP_RMS = 250       # below this = quiet
 VAD_SILENCE_MS = 1200    # end the turn after this much trailing quiet (once you've spoken)
 VAD_MAX_MS = 15000       # hard cap on one listening turn, so it can't listen forever
+BARGE_RMS = 700          # loudness that counts as you talking over Golem (barge-in; best with headphones)
 WAKE_RE = re.compile(r"\b(?:hey\s+|ok(?:ay)?\s+)?golem\b[\s,.:!?-]*", re.I)   # "Hey Golem", "ok golem", "golem"
 
 # Same control-line protocol the core (agent.py) parses to attach an image/file to the next message.
@@ -495,6 +496,10 @@ class AgentWindow(QWidget):
         self._transcribe = None
         self._convo = False                # hands-free conversation mode (mic button on)
         self._wake = bool(vc.get("wake", False))   # passive "Hey Golem" wake-word listening (opt-in)
+        self._barge = bool(vc.get("barge", False)) # let the user talk over Golem to interrupt (headphones)
+        self._barge_hits = 0
+        self._barge_timer = QTimer(self)
+        self._barge_timer.timeout.connect(self._barge_tick)
         self._convo_empty = 0              # consecutive silent/empty turns, so noise can't loop forever
         self._heard_speech = False
         self._silence_since = 0.0
@@ -740,7 +745,8 @@ class AgentWindow(QWidget):
     def _save_voice_cfg(self):
         try:
             cfg = _config()
-            cfg["voice"] = {"enabled": self.speak_on, "voice": self.voice_name, "wake": self._wake}
+            cfg["voice"] = {"enabled": self.speak_on, "voice": self.voice_name, "wake": self._wake,
+                            "barge": self._barge}
             CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
         except Exception:
             pass
@@ -922,6 +928,7 @@ class AgentWindow(QWidget):
         """End the active back-and-forth. If wake-word listening is on, drop back to passively waiting."""
         self._convo = False
         self._vad_timer.stop()
+        self._barge_timer.stop()
         try:
             self._mic.stop()
         except Exception:   # noqa: BLE001
@@ -1030,6 +1037,36 @@ class AgentWindow(QWidget):
         # Keep the mic shut for a moment after Golem speaks, so it can't hear its own voice tail through the
         # speakers and transcribe it back (the talk-to-itself feedback loop).
         self._mic_block_until = time.time() + 0.9
+        self._stop_barge_monitor()
+
+    def _start_barge_monitor(self):
+        """While Golem speaks, watch the mic so you can interrupt by talking (needs headphones so the mic
+        isn't just hearing Golem). Opt-in via settings."""
+        if self._mic.is_recording():
+            return
+        if self._mic.start():
+            self._barge_hits = 0
+            self._barge_timer.start(120)
+
+    def _stop_barge_monitor(self):
+        self._barge_timer.stop()
+        try:
+            if self._mic.is_recording():
+                self._mic.stop()
+        except Exception:   # noqa: BLE001
+            pass
+
+    def _barge_tick(self):
+        if not (self._voice_thread and self._voice_thread.isRunning()):
+            self._stop_barge_monitor()   # Golem finished on its own
+            return
+        self._barge_hits = self._barge_hits + 1 if self._mic.level() > BARGE_RMS else 0
+        if self._barge_hits >= 3:        # ~0.36s of you talking over it -> cut in
+            self._stop_barge_monitor()
+            self._stop_speech()
+            self._mic_block_until = 0.0  # bypass the post-speech cooldown; you're talking now
+            self.sub.setText("listening...")
+            QTimer.singleShot(200, self._start_listen_turn)
 
     def _signal_orb_listening(self):
         """Tell the orb it's listening, so it shows a distinct state (a cool pulsing ring), not speaking."""
@@ -1057,6 +1094,8 @@ class AgentWindow(QWidget):
         self._voice_thread = VoicePlayer(text, self.voice_name)
         self._voice_thread.done.connect(self._on_speech_done)
         self._voice_thread.start()
+        if self._convo and self._barge and HAVE_MIC:   # let the user cut in by talking (opt-in; headphones)
+            self._start_barge_monitor()
 
     def _maybe_queue_speak(self):
         self._ping_orb()                    # let the ambient orb (if running) pulse while Golem responds
@@ -1194,6 +1233,9 @@ class AgentWindow(QWidget):
         wake_cb = QCheckBox("Listen for the wake word “Hey Golem” (keeps the mic on)")
         wake_cb.setChecked(bool(vc.get("wake", False)))
         v.addWidget(wake_cb)
+        barge_cb = QCheckBox("Let me interrupt by talking over it (use headphones)")
+        barge_cb.setChecked(bool(vc.get("barge", False)))
+        v.addWidget(barge_cb)
         pro_cb = QCheckBox("Let Golem glance at my screen and offer help (Navi)")
         pro_cb.setChecked(bool(pc.get("enabled", False)))
         v.addWidget(pro_cb)
@@ -1236,8 +1278,10 @@ class AgentWindow(QWidget):
         voice = cfg.get("voice") or {}
         voice["enabled"] = speak_cb.isChecked()
         voice["wake"] = wake_cb.isChecked()
+        voice["barge"] = barge_cb.isChecked()
         voice.setdefault("voice", DEFAULT_VOICE)
         cfg["voice"] = voice
+        self._barge = barge_cb.isChecked()
         pro = cfg.get("proactive") or {}
         pro["enabled"] = pro_cb.isChecked()
         pro.setdefault("interval_min", 15)
