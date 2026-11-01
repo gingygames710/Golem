@@ -130,9 +130,16 @@ class Orb(QWidget):
         self._resize_to_orb()
         self._place()
 
+        # Match the monitor's refresh so motion is as smooth as the display allows, but cap at 120fps so a
+        # high-refresh panel on a weak GPU can't get hammered. (60Hz -> 60fps, 180Hz -> 120fps, etc.)
+        try:
+            rr = QApplication.primaryScreen().refreshRate() or 60.0
+        except Exception:
+            rr = 60.0
+        self._active_ms = max(8, int(round(1000.0 / max(60.0, min(120.0, rr)))))
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update)
-        self.timer.start(16)               # ~60 fps; the window is small so this stays cheap
+        self.timer.start(self._active_ms)   # as smooth as the monitor (<=120fps); cheap per frame
 
         # The agent window writes an "active until" epoch here when Golem is responding/speaking, so the
         # orb can brighten in time with it. Cheap: a tiny file polled a few times a second.
@@ -146,7 +153,7 @@ class Orb(QWidget):
         self._follow_timer = QTimer(self)
         self._follow_timer.timeout.connect(self._follow_tick)
         if self.follow:
-            self._follow_timer.start(16)   # 60fps so following is buttery smooth
+            self._follow_timer.start(self._active_ms)   # follow at the monitor rate (<=120fps)
 
     # ---- geometry ----
     def _win_half(self) -> int:
@@ -260,7 +267,7 @@ class Orb(QWidget):
         self.ap["follow"] = self.follow
         save_orb(self.ap)
         if self.follow:
-            self._follow_timer.start(16)   # 60fps so following is buttery smooth
+            self._follow_timer.start(self._active_ms)   # follow at the monitor rate (<=120fps)
             self.pulse(1.2)
         else:
             self._follow_timer.stop()
@@ -438,7 +445,7 @@ class Orb(QWidget):
         listening = now < self._listen_until and not speaking   # hearing you (speaking wins if both)
         active = now < self._active_until or speaking or listening
         thinking = active and not speaking and not listening     # working on a reply - shimmer the data
-        self.timer.setInterval(16 if active else 40)   # 60fps when alive, 25fps idle - easy on weak PCs
+        self.timer.setInterval(self._active_ms if active else 40)   # monitor-rate when alive, 25fps idle
 
         # One mood dial: everything below reads from `energy`, eased toward a per-state target so the orb
         # glides between calm, curious, listening and talking as a single creature (no hard switches).
