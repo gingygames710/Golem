@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QScrollArea, QFrame, QFileDialog,
     QColorDialog, QFontComboBox, QSlider, QDialog, QGridLayout, QSpinBox, QComboBox,
-    QSystemTrayIcon, QMenu,
+    QSystemTrayIcon, QMenu, QCheckBox,
 )
 
 try:   # mic capture for talk-to-Golem (1.1.0); absent on a stripped build -> the 🎤 button hides itself
@@ -446,6 +446,22 @@ class TranscribeThread(QThread):
         self.done.emit(text)
 
 
+class WhisperInstallThread(QThread):
+    """Download the speech-to-text engine from the chat window (so the mic can be set up without the Builder)."""
+    done = Signal(bool, str)
+
+    def run(self):
+        ok, msg = False, ""
+        try:
+            import agent
+            ok = agent.ensure_whisper()
+            msg = ("Voice chat is ready - click the microphone to talk." if ok else
+                   "Couldn't download the speech engine (no internet?). Try again later.")
+        except Exception as e:   # noqa: BLE001
+            msg = f"Setup failed: {e}"
+        self.done.emit(ok, msg)
+
+
 class AgentWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -584,10 +600,9 @@ class AgentWindow(QWidget):
         except Exception:   # noqa: BLE001
             return
         self._last_chunk_time = time.time()
-        self.entry.setText("[check-in] Glance at my screen. In ONE short, friendly sentence point out "
-                           "anything useful I could do right now (an error to fix, something stuck, a tip). "
-                           "If nothing stands out, just say 'All clear.'")
-        self.send()
+        self.send("[check-in] Glance at my screen. In ONE short, friendly sentence point out anything "
+                  "useful I could do right now (an error to fix, something stuck, a tip). If nothing "
+                  "stands out, just say 'All clear.'")
 
     def _launch_orb(self):
         """Start the ambient orb (the frozen exe if installed, else orb.py). Best-effort."""
@@ -825,8 +840,7 @@ class AgentWindow(QWidget):
                 return                # convo poller re-opens the mic
             self._convo_empty = 0
             self._last_chunk_time = time.time()   # reply in-flight, so we don't re-listen yet
-            self.entry.setText(text)
-            self.send()               # hands-free: your words go in and send
+            self.send(text)           # hands-free: your words go in and send (your typed draft is left alone)
             return
         if self._wake:                            # passive: only act if you said the wake word
             if not text:
@@ -843,8 +857,7 @@ class AgentWindow(QWidget):
             remainder = text[m.end():].strip()    # anything you said after "Hey Golem"
             if remainder:
                 self._last_chunk_time = time.time()
-                self.entry.setText(remainder)
-                self.send()
+                self.send(remainder)
             else:
                 self._bubble("(listening - go ahead)", "system")
 
@@ -1083,6 +1096,13 @@ class AgentWindow(QWidget):
                                       "border-radius:8px; padding:6px 11px; font-size:15px;")
         self.appear_btn.clicked.connect(self.open_appearance)
         h.addWidget(self.appear_btn)
+        self.settings_btn = QPushButton("⚙")
+        self.settings_btn.setCursor(Qt.PointingHandCursor)
+        self.settings_btn.setToolTip("Settings - voice, microphone and check-ins (no Builder needed)")
+        self.settings_btn.setStyleSheet("background:transparent; border:1px solid #2a2f3a; "
+                                        "border-radius:8px; padding:6px 11px; font-size:15px;")
+        self.settings_btn.clicked.connect(self._open_settings)
+        h.addWidget(self.settings_btn)
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setCursor(Qt.PointingHandCursor)
         self.stop_btn.setStyleSheet("color:#f0c674; background:transparent; border:1px solid #4a3f2a; "
@@ -1105,6 +1125,79 @@ class AgentWindow(QWidget):
         self.restart_btn.clicked.connect(self.restart)
         h.addWidget(self.restart_btn)
         return bar
+
+    def _open_settings(self):
+        """A quick settings menu right in the chat window, so the user can fix the essentials (voice, mic,
+        check-ins) without opening the Builder."""
+        cfg = _config()
+        vc = cfg.get("voice") or {}
+        pc = cfg.get("proactive") or {}
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Golem settings")
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel("Quick settings - no Builder needed. (The Builder has the full set.)"))
+        speak_cb = QCheckBox("Read Golem's replies out loud")
+        speak_cb.setChecked(bool(vc.get("enabled", True)))
+        v.addWidget(speak_cb)
+        wake_cb = QCheckBox("Listen for the wake word “Hey Golem” (keeps the mic on)")
+        wake_cb.setChecked(bool(vc.get("wake", False)))
+        v.addWidget(wake_cb)
+        pro_cb = QCheckBox("Let Golem glance at my screen and offer help (Navi)")
+        pro_cb.setChecked(bool(pc.get("enabled", False)))
+        v.addWidget(pro_cb)
+        try:
+            import agent
+            mic_ready = agent.whisper_installed()
+        except Exception:   # noqa: BLE001
+            mic_ready = False
+        row = QHBoxLayout()
+        mic_lbl = QLabel("Microphone voice chat: installed" if mic_ready else "Microphone voice chat: not installed")
+        row.addWidget(mic_lbl, 1)
+        inst = QPushButton("Reinstall" if mic_ready else "Set up microphone")
+        row.addWidget(inst)
+        v.addLayout(row)
+
+        def do_install():
+            inst.setEnabled(False)
+            mic_lbl.setText("Downloading the speech engine (~155 MB, once)...")
+            self._whisper_install = WhisperInstallThread()
+            self._whisper_install.done.connect(lambda ok, m: (mic_lbl.setText(m), inst.setEnabled(True)))
+            self._whisper_install.start()
+        inst.clicked.connect(do_install)
+
+        note = QLabel("The wake word and screen check-ins take effect next time you open Golem.")
+        note.setStyleSheet("color:#888;")
+        note.setWordWrap(True)
+        v.addWidget(note)
+        bb = QHBoxLayout()
+        cancel = QPushButton("Close")
+        cancel.clicked.connect(dlg.reject)
+        save = QPushButton("Save")
+        save.clicked.connect(dlg.accept)
+        bb.addStretch(1)
+        bb.addWidget(cancel)
+        bb.addWidget(save)
+        v.addLayout(bb)
+        if not dlg.exec():
+            return
+        cfg = _config()
+        voice = cfg.get("voice") or {}
+        voice["enabled"] = speak_cb.isChecked()
+        voice["wake"] = wake_cb.isChecked()
+        voice.setdefault("voice", DEFAULT_VOICE)
+        cfg["voice"] = voice
+        pro = cfg.get("proactive") or {}
+        pro["enabled"] = pro_cb.isChecked()
+        pro.setdefault("interval_min", 15)
+        cfg["proactive"] = pro
+        try:
+            CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        except Exception:   # noqa: BLE001
+            pass
+        self.speak_on = speak_cb.isChecked()
+        if HAVE_MIC and hasattr(self, "speak_btn"):
+            self.speak_btn.setChecked(self.speak_on)
+        self._bubble("Settings saved. (Wake word and screen check-ins apply next time you open Golem.)", "system")
 
     def _open_undo(self):
         """Trust & undo: list the files Golem changed and let the user restore any one."""
@@ -1462,8 +1555,7 @@ class AgentWindow(QWidget):
             return
         if not prompt:
             return
-        self.entry.setText(prompt)
-        self.send()
+        self.send(prompt)
 
     def _run_launch_routines(self, routines: list):
         if not routines or not self._running():
@@ -1495,9 +1587,8 @@ class AgentWindow(QWidget):
         self.raise_()
         self.activateWindow()
         if staged:
-            self.entry.setText("What's on my screen right now? Describe it briefly and point out anything "
-                               "useful I could do.")
-            self.send()
+            self.send("What's on my screen right now? Describe it briefly and point out anything useful "
+                      "I could do.")
 
     def _stage(self, path: str):
         self.pending.append(path)
@@ -1543,16 +1634,23 @@ class AgentWindow(QWidget):
 
     # ---------------------------------------------------------------- send
 
-    def send(self):
-        text = self.entry.text().strip()
+    def send(self, text=None):
+        # text=None -> the user's own input in the box (also when Qt passes a signal arg, e.g. the Send
+        # button's clicked(bool)). An explicit string comes from a routine/voice/check-in: send THAT and
+        # leave whatever the user was typing in the box untouched.
+        if not isinstance(text, str):
+            text = None
+        user_initiated = text is None
+        text = self.entry.text().strip() if user_initiated else text.strip()
         if not text and not self.pending:
             return
         if not self._running():
             self._bubble("The agent isn't running - click Restart.", "system")
             return
         self._last_chunk_time = time.time()   # reply incoming - keep hands-free from re-listening too soon
-        self._last_user_activity = time.time()   # you're active - proactive check-ins hold off
-        self.entry.clear()
+        if user_initiated:
+            self._last_user_activity = time.time()   # you're active - proactive check-ins hold off
+            self.entry.clear()
         self.perm_bar.setVisible(False)
         self.cur_agent, self.agent_text = None, ""   # next agent output starts a fresh bubble
         attachments = list(self.pending)

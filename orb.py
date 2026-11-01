@@ -145,7 +145,7 @@ class Orb(QWidget):
         self._follow_timer = QTimer(self)
         self._follow_timer.timeout.connect(self._follow_tick)
         if self.follow:
-            self._follow_timer.start(500)
+            self._follow_timer.start(16)   # 60fps so following is buttery smooth
 
     # ---- geometry ----
     def _win_half(self) -> int:
@@ -259,7 +259,7 @@ class Orb(QWidget):
         self.ap["follow"] = self.follow
         save_orb(self.ap)
         if self.follow:
-            self._follow_timer.start(500)
+            self._follow_timer.start(16)   # 60fps so following is buttery smooth
             self.pulse(1.2)
         else:
             self._follow_timer.stop()
@@ -290,10 +290,10 @@ class Orb(QWidget):
         scr = QApplication.primaryScreen().availableGeometry()
         tx = max(scr.left(), min(int(tx), scr.right() - self.width()))
         ty = max(scr.top(), min(int(ty), scr.bottom() - self.height()))
-        nx = self.x() + (tx - self.x()) * 0.15   # smooth glide, not a jump
-        ny = self.y() + (ty - self.y()) * 0.15
-        if abs(nx - self.x()) > 0.5 or abs(ny - self.y()) > 0.5:
-            self.move(int(nx), int(ny))
+        nx = self.x() + (tx - self.x()) * 0.14   # gentle ease at 30fps -> smooth glide, not a jump
+        ny = self.y() + (ty - self.y()) * 0.14
+        if abs(nx - self.x()) >= 1 or abs(ny - self.y()) >= 1:   # only move on a real change (less jitter)
+            self.move(round(nx), round(ny))
 
     # ---- activity ----
     def pulse(self, seconds: float = 1.0):
