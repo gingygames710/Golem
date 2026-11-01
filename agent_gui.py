@@ -485,6 +485,8 @@ class AgentWindow(QWidget):
         self._convo_timer.timeout.connect(self._convo_poll)
         self._orb_req = Path(tempfile.gettempdir()) / "golem_orb_request"   # orb -> window: "talk to me"
         self._orb_req_seen = ""
+        self._show_req = Path(tempfile.gettempdir()) / "golem_show_request"  # a 2nd launch -> "come to front"
+        self._show_req_seen = ""
         self._orb_req_timer = QTimer(self)
         self._orb_req_timer.timeout.connect(self._orb_req_poll)
         self._orb_req_timer.start(400)
@@ -534,6 +536,58 @@ class AgentWindow(QWidget):
         _launch = [r for r in (_config().get("routines") or []) if r.get("at_launch")]
         if _launch:                                  # run any "run when Golem starts" routines
             QTimer.singleShot(2600, lambda: self._run_launch_routines(_launch))
+
+        self._last_user_activity = 0.0               # when you last typed/sent (so check-ins stay out of the way)
+        self._sched_ran = {}                         # routine name -> date it last ran today (scheduled routines)
+        self._sched_timer = QTimer(self)             # fires scheduled routines at their daily time
+        self._sched_timer.timeout.connect(self._check_schedule)
+        self._sched_timer.start(60000)               # once a minute
+        pc = _config().get("proactive") or {}
+        self._proactive = bool(pc.get("enabled", False))   # Navi mode: glance at the screen and pipe up
+        if self._proactive:
+            mins = max(3, int(pc.get("interval_min", 15) or 15))
+            self._proactive_timer = QTimer(self)
+            self._proactive_timer.timeout.connect(self._proactive_check)
+            self._proactive_timer.start(mins * 60000)
+
+    def _check_schedule(self):
+        """Run any routine whose daily time matches now (while Golem is running)."""
+        if not self._running():
+            return
+        now = time.localtime()
+        hhmm = f"{now.tm_hour:02d}:{now.tm_min:02d}"
+        today = f"{now.tm_year}-{now.tm_yday}"
+        for r in (_config().get("routines") or []):
+            at = (r.get("at") or "").strip()
+            name = r.get("name") or ""
+            if at == hhmm and self._sched_ran.get(name) != today:
+                self._sched_ran[name] = today
+                self._run_routine(r.get("prompt") or "")
+
+    def _proactive_check(self):
+        """Navi mode: glance at the screen and offer one helpful line - but only when you're not busy."""
+        if not self._proactive or not self._running():
+            return
+        if self._mic.is_recording() or self._transcribe is not None or self._convo:
+            return
+        if self._voice_thread and self._voice_thread.isRunning() or self._speak_timer.isActive():
+            return
+        if (time.time() - self._last_chunk_time) < 3:            # agent still replying
+            return
+        if (time.time() - self._last_user_activity) < 90:        # you're actively using it - don't butt in
+            return
+        try:
+            pix = QApplication.primaryScreen().grabWindow(0)
+            out = Path(tempfile.gettempdir()) / f"golem-check-{int(time.time())}.png"
+            pix.save(str(out), "PNG")
+            self._stage(str(out))
+        except Exception:   # noqa: BLE001
+            return
+        self._last_chunk_time = time.time()
+        self.entry.setText("[check-in] Glance at my screen. In ONE short, friendly sentence point out "
+                           "anything useful I could do right now (an error to fix, something stuck, a tip). "
+                           "If nothing stands out, just say 'All clear.'")
+        self.send()
 
     def _launch_orb(self):
         """Start the ambient orb (the frozen exe if installed, else orb.py). Best-effort."""
@@ -836,7 +890,15 @@ class AgentWindow(QWidget):
             pass
 
     def _orb_req_poll(self):
-        """The orb's 'Talk to Golem' action drops a token here; toggle the conversation when it changes."""
+        """Watch the little cross-process signal files: the orb's 'Talk to Golem' action, and a second
+        launch asking the running Golem to come to the front."""
+        try:
+            sv = self._show_req.read_text().strip()
+            if sv and sv != self._show_req_seen:
+                self._show_req_seen = sv
+                self._show_from_tray()                # a 2nd launch pinged us - surface the existing window
+        except Exception:   # noqa: BLE001
+            pass
         try:
             val = self._orb_req.read_text().strip()
         except Exception:   # noqa: BLE001
@@ -1489,6 +1551,7 @@ class AgentWindow(QWidget):
             self._bubble("The agent isn't running - click Restart.", "system")
             return
         self._last_chunk_time = time.time()   # reply incoming - keep hands-free from re-listening too soon
+        self._last_user_activity = time.time()   # you're active - proactive check-ins hold off
         self.entry.clear()
         self.perm_bar.setVisible(False)
         self.cur_agent, self.agent_text = None, ""   # next agent output starts a fresh bubble
@@ -1730,7 +1793,30 @@ class AppearanceDialog(QDialog):
         super().closeEvent(e)
 
 
+def _single_instance() -> bool:
+    """True if we're the first instance. If another Golem window is already running, ask it to come to
+    the front (via a tiny signal file it polls) and return False so this copy exits - no duplicate agent
+    cores or orbs from relaunching while Golem sits in the tray."""
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        k.CreateMutexW(None, False, "Golem_Agent_SingleInstance")
+        if k.GetLastError() == 183:   # ERROR_ALREADY_EXISTS
+            try:
+                (Path(tempfile.gettempdir()) / "golem_show_request").write_text(str(time.time()))
+            except Exception:   # noqa: BLE001
+                pass
+            return False
+    except Exception:   # noqa: BLE001
+        return True      # if the check itself fails, don't block the app
+    return True
+
+
 def main():
+    if not _single_instance():
+        return           # another Golem is already running; we asked it to show and now bow out
     app = QApplication(sys.argv)
     win = AgentWindow()
     win.show()

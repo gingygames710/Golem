@@ -1802,6 +1802,7 @@ def default_config() -> dict:
         "routines": [],             # saved quick tasks: [{"name","prompt","at_launch"}] - buttons in the chat window
         "home_assistant": {"url": "", "token": ""},   # control the user's own smart home (Sovereign OS seed)
         "tray_presence": False,     # keep Golem running in the tray when the chat window is closed
+        "proactive": {"enabled": False, "interval_min": 15},   # Golem glances at the screen and offers help
         "personality": "",
     }
 

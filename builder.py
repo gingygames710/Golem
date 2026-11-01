@@ -543,6 +543,10 @@ class Builder(QWidget):
                 "token": self.ha_token_edit.text().strip() if getattr(self, "ha_token_edit", None) else "",
             },
             "tray_presence": self.tray_presence_check.isChecked() if getattr(self, "tray_presence_check", None) else False,
+            "proactive": {
+                "enabled": self.proactive_check.isChecked() if getattr(self, "proactive_check", None) else False,
+                "interval_min": self.proactive_interval.value() if getattr(self, "proactive_interval", None) else 15,
+            },
             "personality": self.persona_edit.toPlainText().strip(),
         }
 
@@ -1218,7 +1222,12 @@ class Builder(QWidget):
             return
         self.routines_list.clear()
         for r in self._routines:
-            tag = "   ⏻ runs at launch" if r.get("at_launch") else ""
+            tags = []
+            if r.get("at_launch"):
+                tags.append("⏻ at launch")
+            if (r.get("at") or "").strip():
+                tags.append(f"\U0001f553 {r['at']} daily")
+            tag = ("   " + ", ".join(tags)) if tags else ""
             self.routines_list.addItem(f"{r.get('name', 'Task')}{tag}")
 
     def add_routine(self):
@@ -1243,6 +1252,22 @@ class Builder(QWidget):
         if 0 <= i < len(self._routines):
             self._routines[i]["at_launch"] = not self._routines[i].get("at_launch", False)
             self._refresh_routines_list()
+
+    def set_routine_time(self):
+        i = self.routines_list.currentRow()
+        if not (0 <= i < len(self._routines)):
+            return
+        cur = self._routines[i].get("at", "")
+        txt, ok = QInputDialog.getText(self, "Daily time",
+                                       "Run this routine every day at (24h HH:MM, blank to clear):", text=cur)
+        if not ok:
+            return
+        txt = txt.strip()
+        if txt and not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", txt):
+            QMessageBox.warning(self, "Bad time", "Please use 24-hour HH:MM, like 08:00 or 17:30.")
+            return
+        self._routines[i]["at"] = txt
+        self._refresh_routines_list()
 
     def apply_profile(self, pid: str):
         prof = PROFILES.get(pid, {})
@@ -1569,9 +1594,12 @@ class Builder(QWidget):
         del_rt.clicked.connect(self.remove_routine)
         launch_rt = QPushButton("Toggle 'run at launch'")
         launch_rt.clicked.connect(self.toggle_routine_launch)
+        time_rt = QPushButton("Set daily time")
+        time_rt.clicked.connect(self.set_routine_time)
         rtrow.addWidget(add_rt)
         rtrow.addWidget(del_rt)
         rtrow.addWidget(launch_rt)
+        rtrow.addWidget(time_rt)
         rtrow.addStretch(1)
         rtg.addLayout(rtrow)
         lay.addWidget(routines_box)
@@ -1606,6 +1634,23 @@ class Builder(QWidget):
         pnote.setStyleSheet("color:#888;")
         pnote.setWordWrap(True)
         pg.addWidget(pnote)
+        prow = QHBoxLayout()
+        self.proactive_check = QCheckBox("Let Golem glance at my screen and offer help (Navi mode)")
+        prow.addWidget(self.proactive_check)
+        prow.addWidget(QLabel("every"))
+        self.proactive_interval = QSpinBox()
+        self.proactive_interval.setRange(3, 120)
+        self.proactive_interval.setValue(15)
+        self.proactive_interval.setSuffix(" min")
+        prow.addWidget(self.proactive_interval)
+        prow.addStretch(1)
+        pg.addLayout(prow)
+        pnote2 = QLabel("Golem checks your screen on that interval and pipes up only if something's useful "
+                        "(it stays quiet while you're actively using it). All local - the screen never "
+                        "leaves your PC. Off by default.")
+        pnote2.setStyleSheet("color:#888;")
+        pnote2.setWordWrap(True)
+        pg.addWidget(pnote2)
         lay.addWidget(presence_box)
 
         upd_box = QGroupBox("Updates")
@@ -1755,6 +1800,11 @@ class Builder(QWidget):
             self.ha_token_edit.setText(ha.get("token", ""))
         if getattr(self, "tray_presence_check", None) is not None:
             self.tray_presence_check.setChecked(bool(c.get("tray_presence", False)))
+        pc = c.get("proactive") or {}
+        if getattr(self, "proactive_check", None) is not None:
+            self.proactive_check.setChecked(bool(pc.get("enabled", False)))
+        if getattr(self, "proactive_interval", None) is not None:
+            self.proactive_interval.setValue(int(pc.get("interval_min", 15) or 15))
         if getattr(self, "orb_autostart_check", None) is not None:
             self.orb_autostart_check.setChecked(bool(c.get("orb_autostart", True)))
         if getattr(self, "ollama_install_edit", None) is not None:
