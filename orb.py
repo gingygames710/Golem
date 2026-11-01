@@ -107,6 +107,14 @@ class Orb(QWidget):
         self._speak_interval = 0.06        # seconds per envelope bucket
         self._speak_until = 0.0            # monotonic time the voice ends - orb pulses with light until then
         self._listen_until = 0.0           # monotonic time Golem stops listening - orb shows a cool ring
+        # --- cohesion (1.9.0): one "energy" value, eased every frame, that ALL the motion/colour/face flow
+        # from, so the orb reads as a single living thing with moods instead of a pile of separate effects.
+        self.energy = 0.12                 # 0 (calm/idle) .. 1 (fully engaged/speaking); eased toward a target
+        self._look = [0.0, 0.0]            # where the eyes are looking (eased)
+        self._look_target = [0.0, 0.0]     # where they want to look
+        self._next_look = 0.0              # when to pick a new idle glance
+        self._next_blink = 0.0             # when the next blink happens
+        self._blink_start = -9.0           # monotonic time the current blink began
         self._glow = None                  # cached glow pixmap
         self._glow_key = None
         self._fonts = {}                   # size -> QFont cache, so we don't rebuild fonts each frame
@@ -420,9 +428,18 @@ class Orb(QWidget):
         thinking = active and not speaking and not listening     # working on a reply - shimmer the data
         self.timer.setInterval(16 if active else 40)   # 60fps when alive, 25fps idle - easy on weak PCs
 
-        # gentle breathing; a little bigger/faster when active, and a sharp swell on each loud syllable
-        breathe = 1.0 + (0.10 if active else 0.055) * math.sin(t * (2.6 if active else 1.7)) + 0.26 * amp
-        spin = t * (self.ap["speed"] / 65.0) * (1.9 if active else 1.0)   # livelier orbit
+        # One mood dial: everything below reads from `energy`, eased toward a per-state target so the orb
+        # glides between calm, curious, listening and talking as a single creature (no hard switches).
+        target = 0.85 if speaking else (0.6 if listening else (0.5 if thinking else 0.12))
+        dt = min(0.1, now - getattr(self, "_last_frame", now))
+        self._last_frame = now
+        self.energy += (target - self.energy) * min(1.0, dt * 3.0)   # ~0.3s glide
+        e = self.energy
+        pulse = e + 0.28 * amp              # instantaneous swell on each loud syllable rides on top
+
+        # breathing + spin + size all scale off the one dial, so motion feels of-a-piece
+        breathe = 1.0 + (0.045 + 0.085 * e) * math.sin(t * (1.6 + 1.3 * e)) + 0.26 * amp
+        spin = t * (self.ap["speed"] / 100.0) * (0.8 + 1.7 * e)
         tilt = 0.42
         Reff = R * breathe
 
@@ -461,9 +478,8 @@ class Orb(QWidget):
                 dn = (depth + Reff) / (2 * Reff)              # 0 (far) .. 1 (near)
                 tw = 0.5 + 0.5 * math.sin(t * 1.9 + d.phase)  # twinkle
                 alpha = int((50 + 180 * dn) * (0.55 + 0.45 * tw))
-                if active:
-                    alpha = min(255, int(alpha * (1.25 + 0.9 * amp)))   # digits flare with the voice
-                if thinking:   # a shimmer wave sweeping around the sphere while Golem works
+                alpha = int(alpha * (0.85 + 0.95 * pulse))    # brightness rides the one mood dial + voice
+                if thinking:   # a concentration shimmer sweeping the sphere while Golem works
                     alpha = int(alpha * (0.7 + 0.5 * (0.5 + 0.5 * math.sin(t * 3.0 + d.theta * 3.0))))
                 px = max(8, int(9 + 11 * dn))
                 col = QColor(spark_c if d.warm else digit_c)
@@ -492,33 +508,58 @@ class Orb(QWidget):
             p.setBrush(Qt.NoBrush)
             p.drawEllipse(QPointF(cx, cy), ring, ring)
         draw_digits(front=True)           # digits in front of the core
-        if self.face:                     # the avatar: two eyes of light that look at you and blink
-            self._draw_face(p, cx, cy, t, active)
+        if self.face:                     # the avatar: eyes of light whose expression follows the mood
+            self._draw_face(p, cx, cy, now, amp, speaking, listening, thinking)
         p.end()
 
-    def _draw_face(self, p, cx, cy, t, active):
+    def _draw_face(self, p, cx, cy, now, amp, speaking, listening, thinking):
         sz = self.ap["size"]
         ex, ey = sz * 0.42, sz * 0.22     # eye offset from centre
         er = sz * 0.2                     # eye radius
-        blink = (t % 4.3)
-        open_h = 0.12 if blink < 0.13 else 1.0   # a quick blink every ~4s
-        # look toward the mouse
-        try:
-            g = QCursor.pos()
-            dx, dy = (g.x() - self.x()) - cx, (g.y() - self.y()) - cy
-            d = max(1.0, math.hypot(dx, dy))
-            lookx, looky = dx / d * er * 0.45, dy / d * er * 0.45
-        except Exception:
-            lookx = looky = 0.0
+
+        # blink: a quick dip every few seconds (randomised so it feels natural)
+        if now >= self._next_blink:
+            self._blink_start = now
+            self._next_blink = now + random.uniform(3.0, 6.5)
+        bt = now - self._blink_start
+        blink = max(0.08, abs(bt - 0.08) / 0.08) if bt < 0.16 else 1.0
+
+        # expression follows the mood: wide + alert listening, lively + "smiley" speaking,
+        # half-lidded thinking, relaxed idle
+        if speaking:
+            openness, smile = 0.72 + 0.25 * amp, 0.5
+        elif listening:
+            openness, smile = 1.0, 0.0
+        elif thinking:
+            openness, smile = 0.7, 0.15
+        else:
+            openness, smile = 0.82, 0.1
+        open_h = max(0.08, openness * blink)
+
+        # look toward the cursor while listening; otherwise a slow idle wander
+        if listening:
+            try:
+                g = QCursor.pos()
+                dx, dy = (g.x() - self.x()) - cx, (g.y() - self.y()) - cy
+                d = max(1.0, math.hypot(dx, dy))
+                self._look_target = [dx / d * er * 0.5, dy / d * er * 0.5]
+            except Exception:   # noqa: BLE001
+                pass
+        elif now >= self._next_look:
+            self._next_look = now + random.uniform(1.6, 4.0)
+            self._look_target = [random.uniform(-1, 1) * er * 0.35, random.uniform(-0.6, 0.6) * er * 0.35]
+        self._look[0] += (self._look_target[0] - self._look[0]) * 0.12   # ease the glance
+        self._look[1] += (self._look_target[1] - self._look[1]) * 0.12
+        lookx, looky = self._look
+
         core = QColor(self.ap["core"])
         pupil = QColor(self.ap["glow"])
         for side in (-1, 1):
             cxr, cyr = cx + side * ex, cy - ey
             p.setPen(Qt.NoPen)
-            socket = QColor(10, 12, 20, 180)        # a dark socket so the eye reads against the glow
-            p.setBrush(socket)
-            p.drawEllipse(QPointF(cxr, cyr), er, er * open_h)
-            if open_h > 0.3:                        # pupil only while the eye is open
+            p.setBrush(QColor(10, 12, 20, 180))      # dark socket so the eye reads against the glow
+            p.drawEllipse(QPointF(cxr, cyr - smile * er * 0.12), er, er * open_h * (1.0 - 0.3 * smile))
+            if open_h > 0.3:                         # pupil only while the eye is open
                 p.setBrush(QColor(core.red(), core.green(), core.blue(), 235))
                 p.drawEllipse(QPointF(cxr + lookx, cyr + looky), er * 0.52, er * 0.52)
                 p.setBrush(QColor(pupil.red(), pupil.green(), pupil.blue(), 255))
