@@ -283,8 +283,15 @@ class Orb(QWidget):
             if not u.GetWindowRect(hwnd, ctypes.byref(rect)):
                 return
             half = self._win_half()
-            # aim the orb's centre just inside the active window's top-right corner
-            tcx, tcy = rect.r - 36, rect.t + 70
+            scr = QApplication.primaryScreen().availableGeometry()
+            vis = self.ap["size"] * 2.6        # roughly the orb's visible radius (glow)
+            gap = 14
+            # float BESIDE the window, not on top of it: sit just off the right edge near the top; if
+            # there's no room on the right, tuck in on the left instead.
+            tcx = rect.r + gap + vis
+            if tcx + vis > scr.right():
+                tcx = rect.l - gap - vis
+            tcy = rect.t + 90
             tx, ty = tcx - half, tcy - half
             # remember which way that window is, so the eyes glance toward what you're working in
             ocx, ocy = self.x() + half, self.y() + half
@@ -293,10 +300,9 @@ class Orb(QWidget):
                                max(-1.0, min(1.0, (wcy - ocy) / 500.0))]
         except Exception:
             return
-        scr = QApplication.primaryScreen().availableGeometry()
         tx = max(scr.left(), min(int(tx), scr.right() - self.width()))
         ty = max(scr.top(), min(int(ty), scr.bottom() - self.height()))
-        nx = self.x() + (tx - self.x()) * 0.14   # gentle ease at 30fps -> smooth glide, not a jump
+        nx = self.x() + (tx - self.x()) * 0.14   # gentle ease -> smooth glide, not a jump
         ny = self.y() + (ty - self.y()) * 0.14
         if abs(nx - self.x()) >= 1 or abs(ny - self.y()) >= 1:   # only move on a real change (less jitter)
             self.move(round(nx), round(ny))
@@ -497,13 +503,14 @@ class Orb(QWidget):
         draw_digits(front=False)          # digits behind the core
         gp = self._glow_pixmap()          # the glowing core, pulsing
         gs = self.ap["size"] * 4 * breathe
-        p.drawPixmap(QPointF(cx - gs / 2, cy - gs / 2),
-                     gp.scaled(int(gs), int(gs), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        # Scale during the blit (fast) instead of building a new smoothly-scaled pixmap every frame - the
+        # old per-frame gp.scaled(... SmoothTransformation) pegged a CPU core and could freeze weak PCs.
+        # The glow is a soft gradient, so fast scaling looks identical.
+        p.drawPixmap(int(cx - gs / 2), int(cy - gs / 2), int(gs), int(gs), gp)
         if amp > 0.05:                    # a flare of light on each loud syllable - the orb "speaking"
             bloom = gs * (1.0 + 0.20 * amp)   # brighten more than grow, so it never reaches the window edge
             p.setOpacity(0.45 * amp)
-            p.drawPixmap(QPointF(cx - bloom / 2, cy - bloom / 2),
-                         gp.scaled(int(bloom), int(bloom), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            p.drawPixmap(int(cx - bloom / 2), int(cy - bloom / 2), int(bloom), int(bloom), gp)
             p.setOpacity(1.0)
         if listening:                     # a distinct cool ring while Golem is hearing you (not a mouth)
             ring = self.ap["size"] * 2.35

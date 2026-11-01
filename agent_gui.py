@@ -495,6 +495,7 @@ class AgentWindow(QWidget):
         self._silence_since = 0.0
         self._rec_start = 0.0
         self._last_chunk_time = 0.0        # when the agent last produced output (to know it's still replying)
+        self._mic_block_until = 0.0        # don't open the mic until this time (while/just after Golem speaks)
         self._vad_timer = QTimer(self)     # watches mic level to end a turn when you stop talking
         self._vad_timer.timeout.connect(self._vad_tick)
         self._convo_timer = QTimer(self)   # re-opens the mic for the next turn once Golem is idle
@@ -766,6 +767,8 @@ class AgentWindow(QWidget):
             return
         if not self._running():
             return
+        if time.time() < self._mic_block_until or (self._voice_thread and self._voice_thread.isRunning()):
+            return   # Golem is speaking (or just did) - don't open the mic or it hears itself
         if not self._mic.start():
             self._convo = self._wake = False
             self._convo_timer.stop()
@@ -787,6 +790,9 @@ class AgentWindow(QWidget):
         if not self._mic.is_recording():
             self._vad_timer.stop()
             return
+        if self._voice_thread and self._voice_thread.isRunning():
+            self._end_listen_turn(discard=True)   # Golem started speaking - drop this take so it won't
+            return                                 # transcribe its own voice
         self._signal_orb_listening()
         lvl = self._mic.level()
         now = time.time()
@@ -873,6 +879,8 @@ class AgentWindow(QWidget):
             return
         if self._voice_thread and self._voice_thread.isRunning():
             return                # Golem is speaking - don't listen to itself
+        if time.time() < self._mic_block_until:
+            return                # cooldown after speech so the mic doesn't catch its own tail
         if self._speak_timer.isActive():
             return                # a reply is queued to be spoken
         if self._convo and (time.time() - self._last_chunk_time) < 1.1:
@@ -984,7 +992,13 @@ class AgentWindow(QWidget):
         self._ping_orb(3.0)
         if self.speak_on and piper_available():
             self._voice_thread = VoicePlayer(_clean_for_speech(msg), self.voice_name)
+            self._voice_thread.done.connect(self._on_speech_done)
             self._voice_thread.start()
+
+    def _on_speech_done(self):
+        # Keep the mic shut for a moment after Golem speaks, so it can't hear its own voice tail through the
+        # speakers and transcribe it back (the talk-to-itself feedback loop).
+        self._mic_block_until = time.time() + 0.9
 
     def _signal_orb_listening(self):
         """Tell the orb it's listening, so it shows a distinct state (a cool pulsing ring), not speaking."""
@@ -1006,7 +1020,9 @@ class AgentWindow(QWidget):
             return
         self._spoken_text = text
         self._ping_orb(2.5)                 # a stronger, longer pulse while it's actually speaking
+        self._mic_block_until = time.time() + 600   # block the mic while speaking; _on_speech_done trims it
         self._voice_thread = VoicePlayer(text, self.voice_name)
+        self._voice_thread.done.connect(self._on_speech_done)
         self._voice_thread.start()
 
     def _maybe_queue_speak(self):
