@@ -600,9 +600,12 @@ class AgentWindow(QWidget):
         except Exception:   # noqa: BLE001
             return
         self._last_chunk_time = time.time()
-        self.send("[check-in] Glance at my screen. In ONE short, friendly sentence point out anything "
-                  "useful I could do right now (an error to fix, something stuck, a tip). If nothing "
-                  "stands out, just say 'All clear.'")
+        # Sent silently (show_user=False): the raw check-in prompt + screenshot don't clutter the chat;
+        # only Golem's reply shows.
+        self.send("(Quietly glance at my screen - this is an automatic check-in, I didn't ask.) If there's "
+                  "ONE genuinely useful thing you'd flag right now (an error, something stuck, a clear tip), "
+                  "say it in one short friendly sentence. Otherwise reply with just: All clear.",
+                  show_user=False)
 
     def _launch_orb(self):
         """Start the ambient orb (the frozen exe if installed, else orb.py). Best-effort."""
@@ -1634,10 +1637,12 @@ class AgentWindow(QWidget):
 
     # ---------------------------------------------------------------- send
 
-    def send(self, text=None):
+    def send(self, text=None, show_user=True):
         # text=None -> the user's own input in the box (also when Qt passes a signal arg, e.g. the Send
         # button's clicked(bool)). An explicit string comes from a routine/voice/check-in: send THAT and
         # leave whatever the user was typing in the box untouched.
+        # show_user=False -> send to Golem WITHOUT showing the message (or its attachment) in the chat -
+        # used by Navi check-ins so the raw "[check-in]..." prompt doesn't clutter the conversation.
         if not isinstance(text, str):
             text = None
         user_initiated = text is None
@@ -1657,17 +1662,19 @@ class AgentWindow(QWidget):
         self.pending.clear()
         self._render_attachments()
         if attachments:
-            if text:
+            if text and show_user:
                 self._bubble(text, "user")
-            for path in attachments:
-                self._attachment_bubble(path)
+            if show_user:
+                for path in attachments:
+                    self._attachment_bubble(path)
             payload = {"message": text, "images": [], "files": []}
             for path in attachments:
                 key = "images" if Path(path).suffix.lower() in IMAGE_SUFFIXES else "files"
                 payload[key].append(path)
             self._write(ATTACH_PREFIX + json.dumps(payload))
         else:
-            self._bubble(text, "user")
+            if show_user:
+                self._bubble(text, "user")
             self._write(text)
 
     def _attachment_bubble(self, path: str):

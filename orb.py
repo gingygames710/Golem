@@ -115,6 +115,7 @@ class Orb(QWidget):
         self._next_look = 0.0              # when to pick a new idle glance
         self._next_blink = 0.0             # when the next blink happens
         self._blink_start = -9.0           # monotonic time the current blink began
+        self._gaze_bias = [0.0, 0.0]       # direction toward the window you're in, so it glances your way
         self._glow = None                  # cached glow pixmap
         self._glow_key = None
         self._fonts = {}                   # size -> QFont cache, so we don't rebuild fonts each frame
@@ -285,6 +286,11 @@ class Orb(QWidget):
             # aim the orb's centre just inside the active window's top-right corner
             tcx, tcy = rect.r - 36, rect.t + 70
             tx, ty = tcx - half, tcy - half
+            # remember which way that window is, so the eyes glance toward what you're working in
+            ocx, ocy = self.x() + half, self.y() + half
+            wcx, wcy = (rect.l + rect.r) / 2, (rect.t + rect.b) / 2
+            self._gaze_bias = [max(-1.0, min(1.0, (wcx - ocx) / 500.0)),
+                               max(-1.0, min(1.0, (wcy - ocy) / 500.0))]
         except Exception:
             return
         scr = QApplication.primaryScreen().availableGeometry()
@@ -547,7 +553,9 @@ class Orb(QWidget):
                 pass
         elif now >= self._next_look:
             self._next_look = now + random.uniform(1.6, 4.0)
-            self._look_target = [random.uniform(-1, 1) * er * 0.35, random.uniform(-0.6, 0.6) * er * 0.35]
+            bx, by = self._gaze_bias   # lean toward the window you're working in, plus a little wander
+            self._look_target = [(bx * 0.6 + random.uniform(-0.4, 0.4)) * er * 0.6,
+                                 (by * 0.6 + random.uniform(-0.3, 0.3)) * er * 0.6]
         self._look[0] += (self._look_target[0] - self._look[0]) * 0.12   # ease the glance
         self._look[1] += (self._look_target[1] - self._look[1]) * 0.12
         lookx, looky = self._look
