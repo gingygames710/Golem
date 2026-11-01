@@ -555,6 +555,10 @@ class AgentWindow(QWidget):
             QTimer.singleShot(2600, lambda: self._run_launch_routines(_launch))
 
         self._last_user_activity = 0.0               # when you last typed/sent (so check-ins stay out of the way)
+        self._proactive_pending = False              # a Navi check-in reply is coming - hold speech + judge it
+        self._proactive_settle = QTimer(self)        # fires once the check-in reply has settled
+        self._proactive_settle.setSingleShot(True)
+        self._proactive_settle.timeout.connect(self._proactive_resolve)
         self._sched_ran = {}                         # routine name -> date it last ran today (scheduled routines)
         self._sched_timer = QTimer(self)             # fires scheduled routines at their daily time
         self._sched_timer.timeout.connect(self._check_schedule)
@@ -601,12 +605,34 @@ class AgentWindow(QWidget):
         except Exception:   # noqa: BLE001
             return
         self._last_chunk_time = time.time()
+        self._proactive_pending = True   # hold speech + judge the reply; drop it if it's just "All clear"
         # Sent silently (show_user=False): the raw check-in prompt + screenshot don't clutter the chat;
-        # only Golem's reply shows.
+        # only Golem's reply shows (and only if it's actually useful).
         self.send("(Quietly glance at my screen - this is an automatic check-in, I didn't ask.) If there's "
                   "ONE genuinely useful thing you'd flag right now (an error, something stuck, a clear tip), "
                   "say it in one short friendly sentence. Otherwise reply with just: All clear.",
                   show_user=False)
+
+    def _proactive_resolve(self):
+        """A Navi check-in reply has settled. If it's just 'All clear' (or nothing), quietly drop it -
+        no bubble, no speech - so Navi only ever interrupts you when it actually has something."""
+        self._proactive_pending = False
+        text = _clean_for_speech(self.agent_text or "")
+        trivial = (not text) or (len(text) < 70 and re.search(
+            r"\b(all clear|nothing|no issues?|all good|looks good|you'?re good|can't see|cannot see)\b",
+            text, re.I))
+        if trivial:
+            if self.cur_agent is not None:          # remove the check-in bubble entirely
+                row = self.cur_agent.parentWidget()
+                self.bubbles = [(l, w) for (l, w) in self.bubbles if l is not self.cur_agent]
+                if row is not None:
+                    row.setParent(None)
+                    row.deleteLater()
+            self.cur_agent, self.agent_text = None, ""
+            return
+        if self.speak_on and piper_available():     # a real nudge - now it may speak
+            self._spoken_text = ""
+            self._speak_current()
 
     def _launch_orb(self):
         """Start the ambient orb (the frozen exe if installed, else orb.py). Best-effort."""
@@ -1010,6 +1036,8 @@ class AgentWindow(QWidget):
 
     def _speak_current(self):
         """Fired a moment after the agent stops producing output: read the finished reply aloud once."""
+        if getattr(self, "_proactive_pending", False):
+            return   # a Navi check-in reply - don't speak until _proactive_resolve decides it's worth it
         if not self.speak_on or not piper_available():
             return
         text = _clean_for_speech(self.agent_text or "")
@@ -1453,6 +1481,8 @@ class AgentWindow(QWidget):
     def on_chunk(self, raw: str):
         raw = ANSI.sub("", raw)
         self._last_chunk_time = time.time()   # agent is producing output - hands-free waits for it to finish
+        if self._proactive_pending:
+            self._proactive_settle.start(1500)   # judge the check-in reply ~1.5s after it stops
         if PERMISSION_HINT.search(raw):
             self.perm_bar.setVisible(True)
         data = self.line_buf + raw
