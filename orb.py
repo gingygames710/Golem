@@ -437,8 +437,6 @@ class Orb(QWidget):
         now = time.monotonic()
         t = now - self._t0
         cx, cy = self.width() / 2, self.height() / 2
-        cx += math.sin(t * 0.7) * 4.0        # gentle idle float, so it feels alive instead of pinned
-        cy += math.sin(t * 0.9 + 1.3) * 5.0
         R = self.ap["size"] * 1.7
         amp = self._speak_amp(now)          # 0..1 loudness of the voice right now (pulses of light)
         speaking = now < self._speak_until
@@ -455,6 +453,8 @@ class Orb(QWidget):
         self.energy += (target - self.energy) * min(1.0, dt * 3.0)   # ~0.3s glide
         e = self.energy
         pulse = e + 0.28 * amp              # instantaneous swell on each loud syllable rides on top
+        cx += math.sin(t * 0.7) * (3.0 + 1.8 * e)        # gentle float: calm when idle, livelier when engaged
+        cy += math.sin(t * 0.9 + 1.3) * (3.5 + 2.2 * e)
 
         # breathing + spin + size all scale off the one dial, so motion feels of-a-piece
         breathe = 1.0 + (0.045 + 0.085 * e) * math.sin(t * (1.6 + 1.3 * e)) + 0.26 * amp
@@ -465,10 +465,12 @@ class Orb(QWidget):
         digit_c = QColor(self.ap["digit"])
         spark_c = QColor(self.ap["spark"])
 
-        # occasionally flip some digits so the data looks alive
-        if now - self._last_flip > 0.05:
+        # occasionally flip some digits so the data looks alive - calm and sparse when idle, quicker and
+        # busier when engaged (reads from the same mood dial, and eases the idle flicker/CPU down)
+        if now - self._last_flip > (0.13 - 0.08 * e):
             self._last_flip = now
-            for d in random.sample(self.digits, max(1, len(self.digits) // 40)):
+            n = max(1, int(len(self.digits) * (0.015 + 0.02 * e)))
+            for d in random.sample(self.digits, min(len(self.digits), n)):
                 d.char = "1" if d.char == "0" else "0"
 
         # project every digit to screen with depth

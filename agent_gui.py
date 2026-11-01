@@ -250,16 +250,21 @@ def ensure_voice(voice: str) -> bool:
 
 _MD = re.compile(r"[`*#_>~\[\]]|\(https?://[^)]+\)")
 _BRACKET = re.compile(r"\[[^\]]*\]")                         # [brain: ...], [Paused ...] - status, never spoken
+_EMOJI = re.compile(                                        # emoji + pictographs + arrows - TTS mangles them
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002190-\U000021FF\U00002B00-\U00002BFF"
+    "\U0001F1E6-\U0001F1FF️�]")
 
 
 def _clean_for_speech(text: str) -> str:
     t = ANSI.sub("", text)                                   # strip any colour codes
     t = re.sub(r"```.*?```", " (code) ", t, flags=re.S)      # don't read code blocks aloud
     t = _BRACKET.sub(" ", t)                                 # drop bracketed status notices (brain/model/etc.)
-    t = _MD.sub("", t).strip()
+    t = _EMOJI.sub("", t)                                    # don't read emoji/arrows aloud
+    t = _MD.sub("", t)
+    t = re.sub(r"\s+", " ", t).strip()                       # collapse whitespace so speech flows naturally
     if len(t) > 700:                                         # trim long replies at a natural boundary
         cut = t[:700]
-        end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "), cut.rfind("\n"))
+        end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
         t = cut[:end + 1] if end > 400 else cut.rsplit(" ", 1)[0]
     return t
 
